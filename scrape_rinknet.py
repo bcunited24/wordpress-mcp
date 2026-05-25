@@ -288,9 +288,12 @@ async def main() -> None:
     print("A browser window is about to open.")
     print()
     print("  *** IMPORTANT ***")
-    print("  DO NOT close the browser window at any point.")
-    print("  Log into RinkNet in that window, then come back")
-    print("  HERE and press ENTER. Leave the browser open!")
+    print("  1. Log into RinkNet in the browser window.")
+    print("  2. Navigate to YOUR player list (the page with")
+    print("     all the player names on the left side).")
+    print("  3. Once you can SEE the player list, come back")
+    print("     HERE and press ENTER.")
+    print("  DO NOT close the browser window!")
     print()
 
     all_contacts: list[dict] = []
@@ -301,23 +304,12 @@ async def main() -> None:
         page    = await context.new_page()
 
         await page.goto("https://ops.rinknet.com/")
-        input(">>> Logged in? (leave browser open!) Press ENTER … ")
+        input(">>> Logged in and on your player list page? Press ENTER … ")
 
-        print("\nLoading player list …")
-        try:
-            await page.goto(TARGET_LIST_URL)
-        except Exception:
-            # Browser was closed — reopen and ask user to log in again
-            print()
-            print("  The browser window was closed. Reopening it now.")
-            print("  Please log into RinkNet again, then press ENTER.")
-            print()
-            page = await context.new_page()
-            await page.goto("https://ops.rinknet.com/")
-            input(">>> Logged in? Press ENTER … ")
-            await page.goto(TARGET_LIST_URL)
+        # Use whatever page the user navigated to — no hardcoded URL
+        print("\nStarting on current page …")
         await _wait_stable(page)
-        await asyncio.sleep(3)
+        await asyncio.sleep(2)
 
         page_num = 1
         while True:

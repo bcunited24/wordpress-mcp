@@ -201,56 +201,86 @@ async def get_family_emails(page, player_name: str) -> list[dict]:
     return contacts
 
 
-async def process_page(page, all_contacts: list) -> None:
-    """Process every player visible in the current left-sidebar page."""
+async def _find_left_panel_players(page) -> list:
+    """
+    Find player name elements that live in the LEFT sidebar only.
+    Uses the NEXT PAGE button as a position anchor — everything to the
+    left of (and at the same x-range as) that button is the sidebar.
+    Falls back to a 280px hard limit if the button isn't found.
+    """
+    # Determine the right edge of the left panel from the NEXT PAGE button
+    panel_right = 300  # sensible default
+    for btn_text in ["NEXT PAGE", "PREVIOUS PAGE", "Page 1"]:
+        btn = await page.query_selector(f"text={btn_text}")
+        if btn:
+            box = await btn.bounding_box()
+            if box:
+                panel_right = box["x"] + box["width"] + 20
+                break
+
+    player_items = []
+    for sel in ["li", "a", "span"]:
+        candidates = await page.query_selector_all(sel)
+        for el in candidates:
+            try:
+                txt = (await el.inner_text()).strip()
+                # Must look like "LastName, FirstName"
+                if not re.match(r'^[A-Za-z][A-Za-z\s\-\']+,\s*[A-Za-z]', txt):
+                    continue
+                if len(txt) > 50 or "\n" in txt:
+                    continue
+                box = await el.bounding_box()
+                if not box:
+                    continue
+                # Must be in the left panel
+                if box["x"] > panel_right or box["width"] < 30 or box["height"] > 50:
+                    continue
+                player_items.append(el)
+            except Exception:
+                continue
+        if len(player_items) > 3:
+            break
+
+    return player_items
+
+
+async def process_page(page, all_contacts: list, confirmed: list) -> None:
+    """
+    Process every player visible in the current left-sidebar page.
+    confirmed is a one-element list used as a mutable flag across calls.
+    """
     await asyncio.sleep(1.5)
 
-    # Find player name items in the left sidebar list
-    # From the screenshot they appear to be plain <li> or <a> elements
-    player_items = []
-    for sel in [
-        ".list-group-item",
-        "ul.player-list li",
-        "ul li a",
-        "div[class*='sidebar'] li",
-        "div[class*='list'] li",
-        "[ng-repeat] a",
-        "[ng-repeat]",
-        "li",            # broad fallback
-    ]:
-        candidates = await page.query_selector_all(sel)
-        # Filter to items that look like "LastName, FirstName"
-        named = []
-        for el in candidates:
-            txt = (await el.inner_text()).strip()
-            if "," in txt and len(txt) < 60 and "\n" not in txt:
-                named.append(el)
-        if len(named) > 3:
-            player_items = named
-            print(f"  (using selector '{sel}' — {len(named)} players on this page)")
-            break
+    player_items = await _find_left_panel_players(page)
 
     if not player_items:
         print("  [!] Could not find player list items on this page — skipping")
         return
 
+    # ── Confirmation step (first page only) ─────────────────────────────────
+    if not confirmed[0]:
+        print(f"\n  Found {len(player_items)} players on this page.")
+        print("  First 10 names detected:")
+        for i, el in enumerate(player_items[:10]):
+            try:
+                name = (await el.inner_text()).strip()
+                print(f"    {i+1}. {name}")
+            except Exception:
+                pass
+        print()
+        answer = input("  Do these look like YOUR players? (y/n) ").strip().lower()
+        if answer != "y":
+            print()
+            print("  Stopping. Please send a screenshot of the browser and black")
+            print("  window to get the selectors adjusted.")
+            raise SystemExit(0)
+        confirmed[0] = True
+    # ─────────────────────────────────────────────────────────────────────────
+
     total = len(player_items)
     for idx in range(total):
-        # Re-query each time to avoid stale element references
-        player_items = []
-        for sel in [".list-group-item", "ul.player-list li", "ul li a",
-                    "div[class*='sidebar'] li", "div[class*='list'] li",
-                    "[ng-repeat] a", "[ng-repeat]", "li"]:
-            candidates = await page.query_selector_all(sel)
-            named = []
-            for el in candidates:
-                txt = (await el.inner_text()).strip()
-                if "," in txt and len(txt) < 60 and "\n" not in txt:
-                    named.append(el)
-            if len(named) > 3:
-                player_items = named
-                break
-
+        # Re-query to avoid stale element handles after each click/navigation
+        player_items = await _find_left_panel_players(page)
         if idx >= len(player_items):
             break
 
@@ -312,12 +342,13 @@ async def main() -> None:
         await asyncio.sleep(2)
 
         page_num = 1
+        confirmed = [False]  # mutable flag so confirmation only happens once
         while True:
             print(f"\n{'─'*50}")
             print(f"  PAGE {page_num}")
             print(f"{'─'*50}")
 
-            await process_page(page, all_contacts)
+            await process_page(page, all_contacts, confirmed)
 
             # Look for NEXT PAGE button
             next_btn = await page.query_selector(

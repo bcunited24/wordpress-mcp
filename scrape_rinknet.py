@@ -203,45 +203,60 @@ async def get_family_emails(page, player_name: str) -> list[dict]:
 
 async def _find_left_panel_players(page) -> list:
     """
-    Find player name elements that live in the LEFT sidebar only.
-    Uses the NEXT PAGE button as a position anchor — everything to the
-    left of (and at the same x-range as) that button is the sidebar.
-    Falls back to a 280px hard limit if the button isn't found.
+    Sample pixel positions in the left ~30px of the page to find player
+    names. Uses JS elementFromPoint so we only get elements that are
+    ACTUALLY rendered and visible at those coordinates.
+    Returns a list of (name_string, Playwright_locator) tuples.
     """
-    # Determine the right edge of the left panel from the NEXT PAGE button
-    panel_right = 300  # sensible default
-    for btn_text in ["NEXT PAGE", "PREVIOUS PAGE", "Page 1"]:
-        btn = await page.query_selector(f"text={btn_text}")
-        if btn:
-            box = await btn.bounding_box()
-            if box:
-                panel_right = box["x"] + box["width"] + 20
-                break
+    # Scroll the left panel to the top first so we capture from row 1
+    await page.evaluate("window.scrollTo(0, 0)")
+    await asyncio.sleep(0.3)
 
-    player_items = []
-    for sel in ["li", "a", "span"]:
-        candidates = await page.query_selector_all(sel)
-        for el in candidates:
-            try:
-                txt = (await el.inner_text()).strip()
-                # Must look like "LastName, FirstName"
-                if not re.match(r'^[A-Za-z][A-Za-z\s\-\']+,\s*[A-Za-z]', txt):
-                    continue
-                if len(txt) > 50 or "\n" in txt:
-                    continue
-                box = await el.bounding_box()
-                if not box:
-                    continue
-                # Must be in the left panel
-                if box["x"] > panel_right or box["width"] < 30 or box["height"] > 50:
-                    continue
-                player_items.append(el)
-            except Exception:
-                continue
-        if len(player_items) > 3:
-            break
+    viewport_height = await page.evaluate("() => window.innerHeight")
 
-    return player_items
+    # Sample x=25 (left panel) at every 16px down the page
+    names: list[str] = await page.evaluate(
+        """(height) => {
+            const seen  = new Set();
+            const found = [];
+            const pat   = /^[A-Za-z][A-Za-z\\s\\-\\']+,\\s*[A-Za-z]/;
+            for (let y = 60; y < height - 60; y += 16) {
+                const el = document.elementFromPoint(25, y);
+                if (!el) continue;
+                // Walk up to find a leaf-ish element with just a player name
+                let target = el;
+                for (let i = 0; i < 4; i++) {
+                    const txt = (target.innerText || target.textContent || '').trim();
+                    if (pat.test(txt) && txt.length < 55 && !txt.includes('\\n')) {
+                        if (!seen.has(txt)) {
+                            seen.add(txt);
+                            found.push(txt);
+                        }
+                        break;
+                    }
+                    if (!target.parentElement) break;
+                    target = target.parentElement;
+                }
+            }
+            return found;
+        }""",
+        viewport_height,
+    )
+
+    if not names:
+        return []
+
+    # Convert each name string into a Playwright locator we can click
+    handles = []
+    for name in names:
+        try:
+            loc = page.get_by_text(name, exact=True).first
+            if await loc.count() > 0 and await loc.is_visible():
+                handles.append((name, loc))
+        except Exception:
+            pass
+
+    return handles
 
 
 async def process_page(page, all_contacts: list, confirmed: list) -> None:
@@ -251,22 +266,18 @@ async def process_page(page, all_contacts: list, confirmed: list) -> None:
     """
     await asyncio.sleep(1.5)
 
-    player_items = await _find_left_panel_players(page)
+    pairs = await _find_left_panel_players(page)  # list of (name, locator)
 
-    if not player_items:
+    if not pairs:
         print("  [!] Could not find player list items on this page — skipping")
         return
 
     # ── Confirmation step (first page only) ─────────────────────────────────
     if not confirmed[0]:
-        print(f"\n  Found {len(player_items)} players on this page.")
+        print(f"\n  Found {len(pairs)} players on this page.")
         print("  First 10 names detected:")
-        for i, el in enumerate(player_items[:10]):
-            try:
-                name = (await el.inner_text()).strip()
-                print(f"    {i+1}. {name}")
-            except Exception:
-                pass
+        for i, (name, _) in enumerate(pairs[:10]):
+            print(f"    {i+1}. {name}")
         print()
         answer = input("  Do these look like YOUR players? (y/n) ").strip().lower()
         if answer != "y":
@@ -277,20 +288,17 @@ async def process_page(page, all_contacts: list, confirmed: list) -> None:
         confirmed[0] = True
     # ─────────────────────────────────────────────────────────────────────────
 
-    total = len(player_items)
-    for idx in range(total):
-        # Re-query to avoid stale element handles after each click/navigation
-        player_items = await _find_left_panel_players(page)
-        if idx >= len(player_items):
-            break
+    # Collect names upfront (locators go stale after navigation)
+    player_names = [name for name, _ in pairs]
+    total = len(player_names)
 
-        item = player_items[idx]
-        player_name = (await item.inner_text()).strip()
+    for idx, player_name in enumerate(player_names):
         print(f"  [{idx+1}/{total}] {player_name}")
-
         try:
-            await item.scroll_into_view_if_needed()
-            await item.click()
+            # Re-find by name each time since locators go stale after navigation
+            loc = page.get_by_text(player_name, exact=True).first
+            await loc.scroll_into_view_if_needed()
+            await loc.click()
             await _wait_stable(page, timeout=10_000)
             await asyncio.sleep(1.5)
 

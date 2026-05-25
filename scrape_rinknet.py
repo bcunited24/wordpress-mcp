@@ -3,19 +3,18 @@ RinkNet Parent Email Scraper
 ----------------------------
 HOW TO RUN (Windows):
   1. Install Python from https://python.org  (check "Add to PATH" during install)
-  2. Open Command Prompt in the folder where this file lives, then run:
+  2. Open Command Prompt in this folder and run:
        pip install playwright
        playwright install chromium
        python scrape_rinknet.py
-  3. A browser window will open — log into RinkNet normally, then press
-     ENTER in this terminal. The script clicks through every player,
-     opens each profile, scrolls to the family section, and saves all
-     parent emails to parent_emails.csv.
+  3. A browser window opens — log into RinkNet, then press ENTER here.
+     The script works through all 22 pages of players automatically,
+     clicks each family member in the FAMILY MEMBERS listbox, reads their
+     email, and saves everything to parent_emails.csv.
 """
 
 import asyncio
 import csv
-import json
 import re
 import sys
 from pathlib import Path
@@ -25,92 +24,261 @@ TARGET_LIST_URL = (
     "?listIds=942916689,-1350718491"
 )
 OUTPUT_FILE = Path(__file__).parent / "parent_emails.csv"
-
 EMAIL_RE = re.compile(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}")
 
-# Selector strategies tried in order to locate the player list rows.
-# The first one that returns > 2 elements wins.
-ROW_SELECTORS = [
-    "tbody tr",
-    "table tr:not(:first-child)",
-    "tr[ng-click]",
-    "[ng-click]",
-    ".player-row",
-    "[class*='player-row']",
-    "[class*='playerRow']",
-    "li[ng-repeat]",
-    "[ng-repeat]",
-    "[class*='list-item']",
-]
+
+async def _wait_stable(page, timeout: int = 8_000) -> None:
+    try:
+        await page.wait_for_load_state("networkidle", timeout=timeout)
+    except Exception:
+        await asyncio.sleep(1)
 
 
-# ---------------------------------------------------------------------------
-# JSON helpers
-# ---------------------------------------------------------------------------
-
-def find_structured_contacts(obj: object, player_name: str = "") -> list[dict]:
+async def _read_value(page, label_text: str) -> str:
     """
-    Recursively walk a JSON blob and return a list of contact dicts
-    {player, relation/type (optional), name (optional), email}.
+    Find a form field by its visible label text and return the field's value.
+    Handles both <input> fields and plain text siblings.
+    """
+    try:
+        # Strategy 1: find a <label> whose text contains the label, get its 'for' id
+        label = await page.query_selector(f"text={label_text}")
+        if label:
+            for_id = await label.get_attribute("for")
+            if for_id:
+                inp = await page.query_selector(f"#{for_id}")
+                if inp:
+                    val = await inp.input_value()
+                    return (val or "").strip()
+
+        # Strategy 2: evaluate JS — walk the DOM to find the label then its sibling/parent input
+        val = await page.evaluate(
+            """(labelText) => {
+                for (const el of document.querySelectorAll('td, th, label, dt, span, div')) {
+                    if (el.innerText && el.innerText.trim().startsWith(labelText)) {
+                        // Try next sibling
+                        let sib = el.nextElementSibling;
+                        while (sib) {
+                            const inp = sib.tagName === 'INPUT' ? sib
+                                      : sib.querySelector('input');
+                            if (inp) return inp.value || inp.innerText || '';
+                            sib = sib.nextElementSibling;
+                        }
+                        // Try parent row's inputs
+                        const row = el.closest('tr, .form-row, .field-row, div');
+                        if (row) {
+                            const inp = row.querySelector('input');
+                            if (inp) return inp.value || '';
+                        }
+                    }
+                }
+                return '';
+            }""",
+            label_text,
+        )
+        return (val or "").strip()
+    except Exception:
+        return ""
+
+
+async def get_family_emails(page, player_name: str) -> list[dict]:
+    """
+    From the currently-displayed player profile, click each family member
+    in the FAMILY MEMBERS listbox and capture their email address.
+    Returns a list of contact dicts.
     """
     contacts: list[dict] = []
 
-    if isinstance(obj, list):
-        for item in obj:
-            contacts.extend(find_structured_contacts(item, player_name))
+    try:
+        # Scroll the FAMILY MEMBERS heading into view
+        heading = await page.query_selector("text=FAMILY MEMBERS")
+        if not heading:
+            return contacts
+        await heading.scroll_into_view_if_needed()
+        await asyncio.sleep(0.5)
 
-    elif isinstance(obj, dict):
-        # Does this dict directly contain an email-valued key?
-        email_val: str | None = None
-        for k, v in obj.items():
-            if isinstance(v, str) and EMAIL_RE.fullmatch(v.strip()):
-                email_val = v.strip().lower()
+        # The family member listbox — try common patterns
+        # From the screenshot it looks like a <select> or styled list inside
+        # the FAMILY MEMBERS section.
+        listbox = None
+        for sel in ["select", "[class*='family'] select",
+                    "[class*='family'] ul li", "[class*='family'] .list-group-item"]:
+            candidate = await page.query_selector(sel)
+            if candidate:
+                listbox = candidate
+                listbox_sel = sel
                 break
 
-        if email_val:
-            contact: dict = {"player": player_name, "email": email_val}
-            for k, v in obj.items():
-                kl = k.lower()
-                if isinstance(v, str) and any(
-                    tok in kl for tok in
-                    ("first", "last", "name", "relation", "type", "role",
-                     "parent", "guardian")
-                ):
-                    contact[k] = v
-            contacts.append(contact)
+        if not listbox:
+            return contacts
+
+        # Get all items in the listbox
+        if listbox.get_property("tagName"):
+            tag = await page.evaluate("el => el.tagName.toLowerCase()", listbox)
         else:
-            for v in obj.values():
-                contacts.extend(find_structured_contacts(v, player_name))
+            tag = "select"
+
+        if tag == "select":
+            # It's a <select> — iterate over <option> elements
+            options = await page.query_selector_all(f"{listbox_sel} option, select option")
+            member_count = len(options)
+
+            for idx in range(member_count):
+                # Re-query to avoid stale references
+                opts = await page.query_selector_all("select option")
+                if idx >= len(opts):
+                    break
+                opt = opts[idx]
+                member_name = (await opt.inner_text()).strip()
+                opt_value   = await opt.get_attribute("value")
+
+                # Select this option (triggers Angular/Vue change binding)
+                select_el = await page.query_selector("select")
+                if opt_value is not None:
+                    await page.evaluate(
+                        """([sel, val]) => {
+                            const s = document.querySelector(sel);
+                            if (!s) return;
+                            s.value = val;
+                            s.dispatchEvent(new Event('change', {bubbles: true}));
+                        }""",
+                        ["select", opt_value],
+                    )
+                else:
+                    await opt.click()
+
+                await asyncio.sleep(1.0)   # wait for right-side form to update
+
+                # Read the E-Mail field
+                email = await _read_value(page, "E-Mail")
+
+                # Fallback: scan all inputs on the page for an email-shaped value
+                if not email or "@" not in email:
+                    email = await page.evaluate(
+                        """() => {
+                            for (const inp of document.querySelectorAll('input')) {
+                                const v = (inp.value || '').trim();
+                                if (/@/.test(v)) return v;
+                            }
+                            // Also check plain text nodes
+                            const all = document.body.innerText;
+                            const m = all.match(/[\\w._%+\\-]+@[\\w.\\-]+\\.[a-zA-Z]{2,}/);
+                            return m ? m[0] : '';
+                        }"""
+                    )
+
+                if email and "@" in email:
+                    contacts.append({
+                        "player":        player_name,
+                        "family_member": member_name,
+                        "email":         email.lower().strip(),
+                    })
+                    print(f"        {member_name} → {email}")
+                else:
+                    print(f"        {member_name} → (no email)")
+
+        else:
+            # It's a list of <li> elements — click each one
+            items = await page.query_selector_all(f"{listbox_sel}")
+            for item in items:
+                member_name = (await item.inner_text()).strip()
+                await item.click()
+                await asyncio.sleep(1.0)
+
+                email = await _read_value(page, "E-Mail")
+                if email and "@" in email:
+                    contacts.append({
+                        "player":        player_name,
+                        "family_member": member_name,
+                        "email":         email.lower().strip(),
+                    })
+                    print(f"        {member_name} → {email}")
+                else:
+                    print(f"        {member_name} → (no email)")
+
+    except Exception as exc:
+        print(f"        [error reading family members: {exc}]")
 
     return contacts
 
 
-def flat_emails_from_json(obj: object) -> set[str]:
-    """Return every email-like string found anywhere in a JSON structure."""
-    emails: set[str] = set()
-    if isinstance(obj, str):
-        for m in EMAIL_RE.findall(obj):
-            emails.add(m.lower())
-    elif isinstance(obj, dict):
-        for v in obj.values():
-            emails |= flat_emails_from_json(v)
-    elif isinstance(obj, list):
-        for item in obj:
-            emails |= flat_emails_from_json(item)
-    return emails
+async def process_page(page, all_contacts: list) -> None:
+    """Process every player visible in the current left-sidebar page."""
+    await asyncio.sleep(1.5)
 
+    # Find player name items in the left sidebar list
+    # From the screenshot they appear to be plain <li> or <a> elements
+    player_items = []
+    for sel in [
+        ".list-group-item",
+        "ul.player-list li",
+        "ul li a",
+        "div[class*='sidebar'] li",
+        "div[class*='list'] li",
+        "[ng-repeat] a",
+        "[ng-repeat]",
+        "li",            # broad fallback
+    ]:
+        candidates = await page.query_selector_all(sel)
+        # Filter to items that look like "LastName, FirstName"
+        named = []
+        for el in candidates:
+            txt = (await el.inner_text()).strip()
+            if "," in txt and len(txt) < 60 and "\n" not in txt:
+                named.append(el)
+        if len(named) > 3:
+            player_items = named
+            print(f"  (using selector '{sel}' — {len(named)} players on this page)")
+            break
 
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
+    if not player_items:
+        print("  [!] Could not find player list items on this page — skipping")
+        return
+
+    total = len(player_items)
+    for idx in range(total):
+        # Re-query each time to avoid stale element references
+        player_items = []
+        for sel in [".list-group-item", "ul.player-list li", "ul li a",
+                    "div[class*='sidebar'] li", "div[class*='list'] li",
+                    "[ng-repeat] a", "[ng-repeat]", "li"]:
+            candidates = await page.query_selector_all(sel)
+            named = []
+            for el in candidates:
+                txt = (await el.inner_text()).strip()
+                if "," in txt and len(txt) < 60 and "\n" not in txt:
+                    named.append(el)
+            if len(named) > 3:
+                player_items = named
+                break
+
+        if idx >= len(player_items):
+            break
+
+        item = player_items[idx]
+        player_name = (await item.inner_text()).strip()
+        print(f"  [{idx+1}/{total}] {player_name}")
+
+        try:
+            await item.scroll_into_view_if_needed()
+            await item.click()
+            await _wait_stable(page, timeout=10_000)
+            await asyncio.sleep(1.5)
+
+            contacts = await get_family_emails(page, player_name)
+            all_contacts.extend(contacts)
+
+            if not contacts:
+                print("        (no family emails found)")
+
+        except Exception as exc:
+            print(f"        [error: {exc}]")
+
 
 async def main() -> None:
     try:
-        from playwright.async_api import async_playwright, Page
+        from playwright.async_api import async_playwright
     except ImportError:
-        print("ERROR: Playwright not installed.")
-        print("  pip install playwright")
-        print("  playwright install chromium")
+        print("ERROR: Run:  pip install playwright  then:  playwright install chromium")
         sys.exit(1)
 
     print("=" * 60)
@@ -118,90 +286,76 @@ async def main() -> None:
     print("=" * 60)
     print()
     print("A browser window is about to open.")
-    print("Log into RinkNet, then come back here and press ENTER.")
+    print("Log into RinkNet, then press ENTER here to begin.")
     print()
 
-    # Staging buffer for API JSON responses captured between player clicks
-    pending_api: list[dict] = []
+    all_contacts: list[dict] = []
 
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(headless=False)
         context = await browser.new_context()
-        page: Page = await context.new_page()
+        page    = await context.new_page()
 
-        # ---- intercept every JSON API response ----
-        async def on_response(response) -> None:
-            try:
-                if response.status != 200:
-                    return
-                if "json" not in response.headers.get("content-type", ""):
-                    return
-                text = await response.text()
-                if "@" not in text:
-                    return
-                pending_api.append(json.loads(text))
-            except Exception:
-                pass
-
-        page.on("response", on_response)
-        # -------------------------------------------
-
-        # Step 1 — manual login
         await page.goto("https://ops.rinknet.com/")
-        input(">>> Logged in? Press ENTER to continue... ")
-        pending_api.clear()
+        input(">>> Logged in? Press ENTER to start … ")
 
-        # Step 2 — load the player list
         print("\nLoading player list …")
         await page.goto(TARGET_LIST_URL)
         await _wait_stable(page)
         await asyncio.sleep(3)
 
-        # Step 3 — discover how many players are in the list
-        selector, total = await _find_rows(page)
+        page_num = 1
+        while True:
+            print(f"\n{'─'*50}")
+            print(f"  PAGE {page_num}")
+            print(f"{'─'*50}")
 
-        if total == 0:
-            print("\nCould not auto-detect player rows.")
-            print("Switching to MANUAL mode:")
-            print("  Click through every player yourself in the browser window.")
-            print("  The script will capture all API data in the background.")
-            print("  Press ENTER here when you have visited every player profile.")
-            pending_api.clear()
-            input(">>> Done clicking all players? Press ENTER … ")
-            all_contacts = _process_api_batch(pending_api, "")
-        else:
-            print(f"Found {total} players. Starting automated click-through …\n")
-            all_contacts = await _auto_click_all(
-                page, selector, total, pending_api, TARGET_LIST_URL
+            await process_page(page, all_contacts)
+
+            # Look for NEXT PAGE button
+            next_btn = await page.query_selector(
+                "button:has-text('NEXT PAGE'), "
+                "input[value='NEXT PAGE'], "
+                "a:has-text('NEXT PAGE'), "
+                "[class*='next']:not([disabled])"
             )
+            if not next_btn:
+                print("\n[No more pages — done!]")
+                break
+
+            # Check if button is disabled
+            disabled = await next_btn.get_attribute("disabled")
+            if disabled is not None:
+                print("\n[NEXT PAGE is disabled — done!]")
+                break
+
+            print(f"\n  → Moving to page {page_num + 1} …")
+            await next_btn.click()
+            await _wait_stable(page, timeout=10_000)
+            await asyncio.sleep(2)
+            page_num += 1
 
         await browser.close()
 
-    # Step 4 — deduplicate and save
-    seen: set[str] = set()
+    # ── Deduplicate ──────────────────────────────────────────────────────────
+    seen: set[str]   = set()
     unique: list[dict] = []
     for c in all_contacts:
-        e = c.get("email", "").lower().strip()
-        if e and e not in seen and EMAIL_RE.match(e):
-            seen.add(e)
-            unique.append(c)
+        key = (c.get("player", ""), c.get("email", "").lower().strip())
+        if key[1] and key[1] not in seen and EMAIL_RE.match(key[1]):
+            seen.add(key[1])
+            unique.append({**c, "email": key[1]})
 
     print(f"\n{'='*60}")
-    print(f"Total unique parent/family emails collected: {len(unique)}")
+    print(f"Total unique parent/family emails: {len(unique)}")
 
     if not unique:
-        print("\nNo emails found. Possible reasons:")
-        print("  • The page needs a click or scroll before data loads")
-        print("  • The player rows weren't detected — try manual mode")
+        print("\nNo emails found.")
+        print("The page HTML may differ from what was expected.")
+        print("Share a screenshot of what the browser showed and I can adjust the script.")
         return
 
-    # Build fieldnames: player first, email last, everything else in between
-    fieldnames: list[str] = ["player"]
-    for rec in unique:
-        for k in rec:
-            if k not in fieldnames and k != "email":
-                fieldnames.append(k)
-    fieldnames.append("email")
+    fieldnames = ["player", "family_member", "email"]
 
     with open(OUTPUT_FILE, "w", newline="", encoding="utf-8") as fh:
         writer = csv.DictWriter(fh, fieldnames=fieldnames, extrasaction="ignore")
@@ -210,124 +364,6 @@ async def main() -> None:
 
     print(f"Saved → {OUTPUT_FILE}")
     print("Done!")
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-async def _wait_stable(page, timeout: int = 10_000) -> None:
-    try:
-        await page.wait_for_load_state("networkidle", timeout=timeout)
-    except Exception:
-        await asyncio.sleep(2)
-
-
-async def _find_rows(page) -> tuple[str, int]:
-    """Return (winning_selector, count) or ('', 0) if nothing found."""
-    for sel in ROW_SELECTORS:
-        els = await page.query_selector_all(sel)
-        if len(els) > 2:
-            return sel, len(els)
-    return "", 0
-
-
-async def _auto_click_all(
-    page,
-    selector: str,
-    total: int,
-    pending_api: list,
-    list_url: str,
-) -> list[dict]:
-    """Click every player row, scrape their profile, return all contacts."""
-    all_contacts: list[dict] = []
-
-    for idx in range(total):
-        # Re-query rows every iteration — the DOM is rebuilt after each navigation
-        rows = await page.query_selector_all(selector)
-        if idx >= len(rows):
-            print(f"  [!] Row {idx+1} not found after re-query — stopping early")
-            break
-
-        row = rows[idx]
-
-        # Try to read the player name from the row text
-        try:
-            row_text = (await row.inner_text()).strip()
-            player_name = row_text.split("\n")[0].strip()
-        except Exception:
-            player_name = f"Player {idx + 1}"
-
-        print(f"  [{idx+1}/{total}] {player_name} …", end="", flush=True)
-
-        pending_api.clear()
-        contacts: list[dict] = []
-
-        try:
-            await row.scroll_into_view_if_needed()
-            await row.click()
-            await _wait_stable(page, timeout=12_000)
-            await asyncio.sleep(2)
-
-            # Scroll to bottom so the family/contacts section loads
-            await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-            await asyncio.sleep(2)
-            await _wait_stable(page, timeout=6_000)
-
-            # Grab contacts from every API response triggered by this click
-            contacts = _process_api_batch(pending_api, player_name)
-
-            # Belt-and-suspenders: also scan visible page text for email addresses
-            visible_emails: list[str] = await page.evaluate(r"""
-                () => {
-                    const re = /[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/g;
-                    return [...new Set(
-                        (document.body.innerText.match(re) || []).map(e => e.toLowerCase())
-                    )];
-                }
-            """)
-            api_emails = {c["email"] for c in contacts}
-            for e in visible_emails:
-                if e not in api_emails:
-                    contacts.append({"player": player_name, "email": e})
-
-            print(f" {len(contacts)} email(s)")
-            all_contacts.extend(contacts)
-
-        except Exception as exc:
-            print(f" ERROR: {exc}")
-
-        # Navigate back to the player list
-        try:
-            await page.go_back()
-            await _wait_stable(page, timeout=8_000)
-            await asyncio.sleep(1.5)
-        except Exception:
-            # If go_back fails, reload the list URL directly
-            await page.goto(list_url)
-            await _wait_stable(page)
-            await asyncio.sleep(2)
-
-    return all_contacts
-
-
-def _process_api_batch(batch: list[dict], player_name: str) -> list[dict]:
-    """Extract structured contact records from a list of raw API payloads."""
-    contacts: list[dict] = []
-    flat: set[str] = set()
-
-    for payload in batch:
-        found = find_structured_contacts(payload, player_name)
-        if found:
-            contacts.extend(found)
-        flat |= flat_emails_from_json(payload)
-
-    existing = {c["email"] for c in contacts}
-    for e in flat:
-        if e not in existing:
-            contacts.append({"player": player_name, "email": e})
-
-    return contacts
 
 
 if __name__ == "__main__":

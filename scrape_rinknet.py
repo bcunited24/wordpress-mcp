@@ -286,7 +286,11 @@ async def main() -> None:
     print("=" * 60)
     print()
     print("A browser window is about to open.")
-    print("Log into RinkNet, then press ENTER here to begin.")
+    print()
+    print("  *** IMPORTANT ***")
+    print("  DO NOT close the browser window at any point.")
+    print("  Log into RinkNet in that window, then come back")
+    print("  HERE and press ENTER. Leave the browser open!")
     print()
 
     all_contacts: list[dict] = []
@@ -297,10 +301,21 @@ async def main() -> None:
         page    = await context.new_page()
 
         await page.goto("https://ops.rinknet.com/")
-        input(">>> Logged in? Press ENTER to start … ")
+        input(">>> Logged in? (leave browser open!) Press ENTER … ")
 
         print("\nLoading player list …")
-        await page.goto(TARGET_LIST_URL)
+        try:
+            await page.goto(TARGET_LIST_URL)
+        except Exception:
+            # Browser was closed — reopen and ask user to log in again
+            print()
+            print("  The browser window was closed. Reopening it now.")
+            print("  Please log into RinkNet again, then press ENTER.")
+            print()
+            page = await context.new_page()
+            await page.goto("https://ops.rinknet.com/")
+            input(">>> Logged in? Press ENTER … ")
+            await page.goto(TARGET_LIST_URL)
         await _wait_stable(page)
         await asyncio.sleep(3)
 

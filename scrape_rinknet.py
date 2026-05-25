@@ -90,110 +90,93 @@ async def get_family_emails(page, player_name: str) -> list[dict]:
 
     try:
         # Scroll the FAMILY MEMBERS heading into view
-        heading = await page.query_selector("text=FAMILY MEMBERS")
-        if not heading:
+        heading = page.locator("text=FAMILY MEMBERS").first
+        if not await heading.count():
             return contacts
         await heading.scroll_into_view_if_needed()
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(0.8)
 
-        # The family member listbox — try common patterns
-        # From the screenshot it looks like a <select> or styled list inside
-        # the FAMILY MEMBERS section.
-        listbox = None
-        for sel in ["select", "[class*='family'] select",
-                    "[class*='family'] ul li", "[class*='family'] .list-group-item"]:
-            candidate = await page.query_selector(sel)
-            if candidate:
-                listbox = candidate
-                listbox_sel = sel
-                break
-
-        if not listbox:
+        # Find the <select> that immediately follows the FAMILY MEMBERS heading.
+        # Using XPath "following::select[1]" ensures we skip the Province/Country
+        # dropdowns in the ADDRESSES section above it.
+        family_select = heading.locator("xpath=following::select[1]")
+        if not await family_select.count():
             return contacts
 
-        # Get all items in the listbox
-        if listbox.get_property("tagName"):
-            tag = await page.evaluate("el => el.tagName.toLowerCase()", listbox)
-        else:
-            tag = "select"
+        # Get options ONLY from this specific select (not Province/Country dropdowns)
+        option_locs = await family_select.locator("option").all()
+        member_count = len(option_locs)
+        if member_count == 0:
+            return contacts
 
-        if tag == "select":
-            # It's a <select> — iterate over <option> elements
-            options = await page.query_selector_all(f"{listbox_sel} option, select option")
-            member_count = len(options)
+        for idx in range(member_count):
+            # Re-query each time to avoid stale handles
+            option_locs = await family_select.locator("option").all()
+            if idx >= len(option_locs):
+                break
 
-            for idx in range(member_count):
-                # Re-query to avoid stale references
-                opts = await page.query_selector_all("select option")
-                if idx >= len(opts):
-                    break
-                opt = opts[idx]
-                member_name = (await opt.inner_text()).strip()
-                opt_value   = await opt.get_attribute("value")
+            opt = option_locs[idx]
+            raw_name  = (await opt.inner_text()).strip()
+            member_name = " ".join(raw_name.split())   # collapse all whitespace/newlines
+            opt_value = await opt.get_attribute("value")
 
-                # Select this option (triggers Angular/Vue change binding)
-                select_el = await page.query_selector("select")
-                if opt_value is not None:
-                    await page.evaluate(
-                        """([sel, val]) => {
-                            const s = document.querySelector(sel);
-                            if (!s) return;
-                            s.value = val;
-                            s.dispatchEvent(new Event('change', {bubbles: true}));
-                        }""",
-                        ["select", opt_value],
-                    )
-                else:
-                    await opt.click()
-
-                await asyncio.sleep(1.0)   # wait for right-side form to update
-
-                # Read the E-Mail field
-                email = await _read_value(page, "E-Mail")
-
-                # Fallback: scan all inputs on the page for an email-shaped value
-                if not email or "@" not in email:
-                    email = await page.evaluate(
-                        """() => {
-                            for (const inp of document.querySelectorAll('input')) {
-                                const v = (inp.value || '').trim();
-                                if (/@/.test(v)) return v;
+            # Select this option and fire Angular's change event
+            select_id = await family_select.get_attribute("id") or ""
+            select_ng  = await family_select.get_attribute("ng-model") or ""
+            await page.evaluate(
+                """([idAttr, ngAttr, val]) => {
+                    let s = null;
+                    if (idAttr) s = document.getElementById(idAttr);
+                    if (!s && ngAttr) s = document.querySelector('[ng-model="' + ngAttr + '"]');
+                    // Fallback: first select AFTER the FAMILY MEMBERS heading
+                    if (!s) {
+                        const headings = [...document.querySelectorAll('*')]
+                            .filter(el => (el.innerText || '').trim() === 'FAMILY MEMBERS'
+                                       && el.children.length === 0);
+                        for (const h of headings) {
+                            let node = h;
+                            while (node) {
+                                const found = node.tagName === 'SELECT' ? node
+                                            : node.querySelector('select');
+                                if (found) { s = found; break; }
+                                node = node.nextElementSibling
+                                    || node.parentElement?.nextElementSibling;
+                                if (!node) break;
                             }
-                            // Also check plain text nodes
-                            const all = document.body.innerText;
-                            const m = all.match(/[\\w._%+\\-]+@[\\w.\\-]+\\.[a-zA-Z]{2,}/);
-                            return m ? m[0] : '';
-                        }"""
-                    )
+                            if (s) break;
+                        }
+                    }
+                    if (!s) return;
+                    s.value = val;
+                    s.dispatchEvent(new Event('change', {bubbles: true}));
+                }""",
+                [select_id, select_ng, opt_value],
+            )
+            await asyncio.sleep(1.0)
 
-                if email and "@" in email:
-                    contacts.append({
-                        "player":        player_name,
-                        "family_member": member_name,
-                        "email":         email.lower().strip(),
-                    })
-                    print(f"        {member_name} → {email}")
-                else:
-                    print(f"        {member_name} → (no email)")
+            # Read the email from the right-side detail form.
+            # Only look at inputs whose current value looks like an email.
+            email = await page.evaluate(
+                """() => {
+                    const re = /[a-zA-Z0-9._%+\\-]+@[a-zA-Z0-9.\\-]+\\.[a-zA-Z]{2,}/;
+                    for (const inp of document.querySelectorAll('input')) {
+                        const v = (inp.value || '').trim();
+                        if (re.test(v)) return v;
+                    }
+                    return '';
+                }"""
+            )
 
-        else:
-            # It's a list of <li> elements — click each one
-            items = await page.query_selector_all(f"{listbox_sel}")
-            for item in items:
-                member_name = (await item.inner_text()).strip()
-                await item.click()
-                await asyncio.sleep(1.0)
+            if email and "@" in email:
+                contacts.append({
+                    "player":        player_name,
+                    "family_member": member_name,
+                    "email":         email.lower().strip(),
+                })
+                print(f"        {member_name} → {email}")
+            else:
+                print(f"        {member_name} → (no email)")
 
-                email = await _read_value(page, "E-Mail")
-                if email and "@" in email:
-                    contacts.append({
-                        "player":        player_name,
-                        "family_member": member_name,
-                        "email":         email.lower().strip(),
-                    })
-                    print(f"        {member_name} → {email}")
-                else:
-                    print(f"        {member_name} → (no email)")
 
     except Exception as exc:
         print(f"        [error reading family members: {exc}]")

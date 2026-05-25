@@ -16,7 +16,7 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 
-playwright install chromium
+python -m playwright install chromium
 if %errorlevel% neq 0 (
     echo.
     echo ERROR: playwright install failed.

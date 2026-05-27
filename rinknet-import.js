@@ -347,9 +347,10 @@ async function main() {
   console.log('╚══════════════════════════════════════════╝\n');
 
   // State captured from network
-  let listId        = null;
-  let authToken     = null;
-  let addPlayerBody = null;  // format of the add-player API call
+  let listId          = null;
+  let authToken       = null;
+  let addPlayerBody   = null;
+  let loginCompleted  = false;  // set when loginFromAuthPortal fires
 
   const browser = await chromium.launch({ headless: false, slowMo: 100 });
   const context  = await browser.newContext();
@@ -363,6 +364,8 @@ async function main() {
 
     const url = req.url();
     const method = req.method();
+    if (url.includes('/users/loginFromAuthPortal')) loginCompleted = true;
+
     if (method !== 'GET' && method !== 'OPTIONS' && url.includes('ops.rinknet.com')) {
       const body = req.postData() || '';
       console.log(`  → ${method} ${url.replace('https://ops.rinknet.com','')}${body ? `  ${body.substring(0,100)}` : ''}`);
@@ -435,13 +438,18 @@ async function main() {
     await page.keyboard.press('Enter');
   }
 
-  // Wait for redirect to ops.rinknet.com (may include a 2FA step)
+  // Wait for loginFromAuthPortal — this fires when auth is fully complete
   console.log('  Waiting for login... (if a 2FA code is needed, enter it in the browser)');
-  try {
-    await page.waitForURL('**/ops.rinknet.com/**', { timeout: 60000 });
-  } catch (_) {
-    await sleep(5000);
+  for (let i = 0; i < 120; i++) {
+    if (loginCompleted) break;
+    await sleep(1000);
   }
+  if (loginCompleted) {
+    console.log('  ✓ Auth completed');
+  } else {
+    console.log('  ⚠ Auth not confirmed — proceeding anyway');
+  }
+  await sleep(2000);
   await sleep(2000);
   console.log('  ✓ Logged in — now at:', page.url());
   await saveScreenshot(page, '01-logged-in');
@@ -449,9 +457,14 @@ async function main() {
   // ── STEP 2: Create list via direct API call ───────────────────────────────
   console.log('\n[2/4] Creating list...');
 
-  // Navigate to lists page first (activates session cookies for fetch)
+  // Navigate to lists page — this may trigger the final auth redirect if not done yet
   await page.goto('https://ops.rinknet.com/#/home/lists', { waitUntil: 'domcontentloaded' });
-  await sleep(3000);
+  // Wait for auth to complete before making any API calls
+  for (let i = 0; i < 60; i++) {
+    if (loginCompleted) break;
+    await sleep(1000);
+  }
+  await sleep(3000); // give session cookies time to be fully set
 
   // Pull season_id and type_id from existing lists so we use the right values
   let season_id = 174507552;

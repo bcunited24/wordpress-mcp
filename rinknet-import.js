@@ -379,19 +379,25 @@ async function main() {
   page.on('response', async res => {
     const url = res.url();
     const method = res.request().method();
-    // Capture list ID from create response
+    // Capture list ID from POST /lists response
     if (url === 'https://ops.rinknet.com/lists' && method === 'POST') {
       try {
-        const json = await res.json();
-        if (json && json.id) {
-          listId = json.id;
-          console.log(`  ✓ List created with ID: ${listId}`);
+        const text = await res.text();
+        let json = null;
+        try { json = JSON.parse(text); } catch (_) {}
+        if (json && json.id !== undefined && json.id !== null) {
+          listId = String(json.id);
+          console.log(`\n  ✓ List created with ID: ${listId}`);
+        } else {
+          console.log(`\n  POST /lists response: ${text.substring(0, 120)}`);
         }
-      } catch (_) {}
+      } catch (e) {
+        console.log(`\n  POST /lists capture error: ${e.message}`);
+      }
     }
-    // Capture list ID from any lists response
-    if (url.match(/ops\.rinknet\.com\/lists\/\d+/) && method === 'GET') {
-      const m = url.match(/lists\/(\d+)/);
+    // Capture list ID from GET /lists/{id} — supports negative IDs
+    if (url.match(/ops\.rinknet\.com\/lists\/-?\d+/) && method === 'GET') {
+      const m = url.match(/lists\/(-?\d+)/);
       if (m && !listId) listId = m[1];
     }
   });
@@ -518,9 +524,17 @@ async function main() {
     console.log('  2. Click Save');
     console.log('  The script will continue automatically once it detects the list was created...');
     await page.goto('https://ops.rinknet.com/#/lists/create', { waitUntil: 'domcontentloaded' });
-    // Wait up to 3 minutes for the user to create the list (response handler captures the ID)
+    // Wait up to 3 minutes — check both the response handler and the browser URL
     for (let i = 0; i < 180; i++) {
-      if (listId) { console.log(`  ✓ List detected (ID: ${listId})`); break; }
+      if (listId) { console.log(`\n  ✓ List detected (ID: ${listId})`); break; }
+      // Also try reading the ID directly from the browser URL
+      const curUrl = page.url();
+      const urlM = curUrl.match(/#\/lists\/(?:view\/)?(-?\d+)/);
+      if (urlM && urlM[1]) {
+        listId = urlM[1];
+        console.log(`\n  ✓ List detected from URL (ID: ${listId})`);
+        break;
+      }
       await sleep(1000);
     }
     if (!listId) {

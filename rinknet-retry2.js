@@ -282,7 +282,9 @@ async function main() {
         await searchInput.fill(term);
         await sleep(3000);  // generous wait for auto-search
 
-        rowCount = await page.locator('table tbody tr').count().catch(() => 0);
+        // Only count rows INSIDE the modal — the main list table also has
+        // hundreds of tr elements which would give a false "found" reading.
+        rowCount = await page.locator('md-dialog-container table tbody tr').count().catch(() => 0);
         if (rowCount > 0) {
           console.log(`  ✓ ${rowCount} row(s) found`);
           break;
@@ -300,19 +302,18 @@ async function main() {
       }
 
       // ── Step 6: Click the best matching row ─────────────────────────────
-      // Try both the accented original and the stripped form — RinkNet displays
-      // accented names in the results table, so has-text("Gregoire") won't match
-      // "Grégoire". Trying both ensures we find the row either way.
+      // Scope every selector to inside md-dialog-container so we never
+      // accidentally click a row in the main list table behind the modal.
       const baseName         = stripAccents(player.last.split(/[-'\s]/)[0]);
       const baseNameAccented = player.last.split(/[-'\s]/)[0];
       const rowTried = [
-        `tr:has-text("${baseNameAccented}"):has-text("/2010")`,
-        `tr:has-text("${baseName}"):has-text("/2010")`,
-        `tr:has-text("${baseNameAccented}"):has-text("/2009")`,
-        `tr:has-text("${baseName}"):has-text("/2009")`,
-        `tr:has-text("${baseNameAccented}")`,
-        `tr:has-text("${baseName}")`,
-        'table tbody tr:first-child',
+        `md-dialog-container tr:has-text("${baseNameAccented}"):has-text("/2010")`,
+        `md-dialog-container tr:has-text("${baseName}"):has-text("/2010")`,
+        `md-dialog-container tr:has-text("${baseNameAccented}"):has-text("/2009")`,
+        `md-dialog-container tr:has-text("${baseName}"):has-text("/2009")`,
+        `md-dialog-container tr:has-text("${baseNameAccented}")`,
+        `md-dialog-container tr:has-text("${baseName}")`,
+        'md-dialog-container table tbody tr:first-child',
       ];
       let rowClicked = false;
       for (const sel of rowTried) {
@@ -328,8 +329,8 @@ async function main() {
       }
       if (!rowClicked) {
         // Last resort: click whatever is in the table
-        await page.locator('table tbody tr').first().click().catch(() => {});
-        console.log(`  ✓ Row clicked (absolute first row)`);
+        await page.locator('md-dialog-container table tbody tr').first().click().catch(() => {});
+        console.log(`  ✓ Row clicked (modal first row fallback)`);
       }
 
       // ── Step 7: Wait up to 5s for the confirm button to become enabled ───

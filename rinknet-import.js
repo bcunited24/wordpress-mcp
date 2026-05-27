@@ -369,9 +369,10 @@ async function main() {
     if (method !== 'GET' && method !== 'OPTIONS' && url.includes('ops.rinknet.com')) {
       const body = req.postData() || '';
       console.log(`  → ${method} ${url.replace('https://ops.rinknet.com','')}${body ? `  ${body.substring(0,100)}` : ''}`);
-      // Capture the format of adding a player to a list
-      if (url.match(/\/lists\/\d+\/details/) && method === 'POST') {
+      // Capture the format of adding a player to a list (supports negative IDs)
+      if (url.match(/\/lists\/-?\d+\/details/) && method === 'POST') {
         addPlayerBody = body;
+        console.log('  ↑ Player add body captured');
       }
     }
   });
@@ -617,32 +618,46 @@ async function main() {
           if (await el.isVisible({ timeout: 1000 })) { searchBox = el; break; }
         } catch (_) {}
       }
-      if (!searchBox) { console.log('SKIP (no search box)'); failed++; continue; }
+      if (!searchBox) {
+        // Save screenshot and HTML so we can see what the search page looks like
+        await saveScreenshot(page, `search-page-${player.rank}`);
+        const html = await page.content();
+        fs.writeFileSync(path.join(SCREENSHOTS_DIR, `search-page-${player.rank}.html`), html);
+        console.log(`SKIP (no search box) — screenshot saved to rinknet-screenshots/`);
+        failed++;
+        continue;
+      }
 
       // Search with first initial + last name (e.g. "T Boisvert")
       const searchTerm = `${player.first.charAt(0)} ${player.last}`;
       await searchBox.fill(searchTerm);
       await sleep(DELAY_MS * 1.5);
-
-      // Press Enter to submit the search
       await searchBox.press('Enter');
-      await sleep(DELAY_MS * 2);
+      await sleep(DELAY_MS * 3); // wait longer for results to load
 
-      // Click the best matching result — prefer rows that match both last and first name
-      // Also try to match 2009 or 2010 birth year as user confirmed these are 2009/2010 players
+      // Screenshot and HTML after search so we can see results
+      if (player.rank <= 3) {
+        await saveScreenshot(page, `search-results-${player.rank}`);
+        const html = await page.content();
+        fs.writeFileSync(path.join(SCREENSHOTS_DIR, `search-results-${player.rank}.html`), html);
+      }
+
+      // Click the best matching result
       let resultClicked = false;
       const nameSels = [
-        // Most specific: both last and first name in same row
         `tr:has-text("${player.last}"):has-text("${player.first}")`,
+        `td:has-text("${player.last}"):has-text("${player.first}")`,
         `li:has-text("${player.last}"):has-text("${player.first}")`,
         `[role="option"]:has-text("${player.last}"):has-text("${player.first}")`,
-        // Less specific: last name only
         `tr:has-text("${player.last}")`,
+        `td:has-text("${player.last}")`,
         `li:has-text("${player.last}")`,
         `[role="option"]:has-text("${player.last}")`,
         '[role="option"]',
-        '[class*="result"] tr', '[class*="result"] li',
-        'table tbody tr:visible',
+        'table tbody tr:first-child td:first-child',
+        'table tbody tr:first-child',
+        '[class*="result"] tr:first-child',
+        '[class*="player-item"]:first-child',
       ];
       for (const sel of nameSels) {
         try {
@@ -655,22 +670,20 @@ async function main() {
         } catch (_) {}
       }
       if (!resultClicked) {
-        // Try clicking Add button directly (some UIs add from search results inline)
-        try {
-          const addInRow = page.locator(`tr:has-text("${player.last}") button, tr:has-text("${player.last}") a`).first();
-          if (await addInRow.isVisible({ timeout: 1000 })) { await addInRow.click(); resultClicked = true; }
-        } catch (_) {}
+        console.log('(player not found in search)');
       }
 
-      await sleep(DELAY_MS);
+      await sleep(DELAY_MS * 2); // wait for rank/rating form to appear
 
       // Try to set ranking
-      for (const sel of ['input[name="ranking"]', 'input[name="rank"]', 'input[placeholder*="rank" i]', 'input[id*="rank" i]']) {
+      let rankSet = false;
+      for (const sel of ['input[name="ranking"]','input[name="rank"]','input[placeholder*="rank" i]','input[id*="rank" i]','input[type="number"]']) {
         try {
           const el = page.locator(sel).first();
-          if (await el.isVisible({ timeout: 500 })) {
+          if (await el.isVisible({ timeout: 800 })) {
             await el.click({ clickCount: 3 });
             await el.fill(String(player.rank));
+            rankSet = true;
             break;
           }
         } catch (_) {}
@@ -679,11 +692,10 @@ async function main() {
       // Try to set star rating
       const starStr = String(player.stars);
       let ratingSet = false;
-      // Try numeric input
-      for (const sel of ['input[name="rating"]', 'input[name="stars"]', 'input[name="rating1"]', 'input[name="Rating1"]', 'input[placeholder*="rating" i]']) {
+      for (const sel of ['input[name="rating"]','input[name="stars"]','input[name="rating1"]','input[name="Rating1"]','input[placeholder*="rating" i]','input[placeholder*="star" i]']) {
         try {
           const el = page.locator(sel).first();
-          if (await el.isVisible({ timeout: 500 })) {
+          if (await el.isVisible({ timeout: 800 })) {
             await el.click({ clickCount: 3 });
             await el.fill(starStr);
             ratingSet = true;
@@ -691,14 +703,12 @@ async function main() {
           }
         } catch (_) {}
       }
-      // Try select/dropdown
       if (!ratingSet) {
         try {
-          await page.selectOption('select[name="rating"], select[name="stars"], select[name="rating1"]', { value: starStr });
+          await page.selectOption('select[name="rating"], select[name="stars"], select[name="rating1"], select', { value: starStr });
           ratingSet = true;
         } catch (_) {}
       }
-      // Try clicking a star element with matching value
       if (!ratingSet) {
         try {
           await page.locator(`[data-value="${starStr}"], [data-rating="${starStr}"], [title="${starStr}"]`).first().click({ timeout: 500 });
@@ -717,18 +727,13 @@ async function main() {
       await sleep(DELAY_MS);
       console.log(`✓`);
       added++;
-
-      // Always navigate back to list view so next player starts from a known good state
-      await page.goto(`https://ops.rinknet.com/#/lists/view/${listId}`, { waitUntil: 'domcontentloaded' });
-      await sleep(1500);
+      await sleep(2000); // let the SPA settle before next player
 
     } catch (err) {
       console.log(`ERR: ${err.message.split('\n')[0].substring(0, 60)}`);
       failed++;
-      // Close any open dialog and return to list view
       try { await page.keyboard.press('Escape'); } catch (_) {}
-      await page.goto(`https://ops.rinknet.com/#/lists/view/${listId}`, { waitUntil: 'domcontentloaded' }).catch(() => {});
-      await sleep(1500);
+      await sleep(2000);
     }
   }
 

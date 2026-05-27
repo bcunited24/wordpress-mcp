@@ -605,28 +605,27 @@ async function main() {
         continue;
       }
       await page.locator(addBtnSel).first().click();
-      await sleep(1000);
 
       // ── Step 3: Wait for the search modal ─────────────────────────────────
-      const searchInputSel = 'input[placeholder*="Search"], input[placeholder*="search"], input[placeholder*="Player"]';
-      let searchInput;
+      // The modal has a CANCEL button — wait for it to confirm the modal opened
       try {
-        await page.waitForSelector(searchInputSel, { timeout: 10000 });
-        searchInput = page.locator(searchInputSel).first();
+        await page.waitForSelector('button:has-text("CANCEL")', { timeout: 10000 });
       } catch (_) {
         await saveScreenshot(page, `modal-not-found-${player.rank}`);
         console.log('SKIP (search modal did not open)');
         failed++;
-        try { await page.keyboard.press('Escape'); } catch (_) {}
         continue;
       }
+      await sleep(500);
 
-      // ── Step 4: Search with first initial + last name ─────────────────────
+      // ── Step 4: Type into the modal's search input ────────────────────────
+      // Use the label "Search by Player's Name" to locate the correct input
+      // (avoids accidentally typing in the header search bar)
       const searchTerm = `${player.first.charAt(0)} ${player.last}`;
+      const searchInput = page.getByLabel("Search by Player's Name");
+      await searchInput.click();
       await searchInput.fill(searchTerm);
-      await sleep(DELAY_MS);
-      await searchInput.press('Enter');
-      await sleep(DELAY_MS * 3);
+      await sleep(DELAY_MS * 3); // wait for auto-search results to load
 
       // ── Step 5: Select the best matching row ──────────────────────────────
       // Prefer 2010 birth year, then 2009, then any row with last name
@@ -640,7 +639,7 @@ async function main() {
       for (const sel of rowSelectors) {
         try {
           const el = page.locator(sel).first();
-          if (await el.isVisible({ timeout: 1500 })) {
+          if (await el.isVisible({ timeout: 2000 })) {
             await el.click();
             rowClicked = true;
             break;
@@ -656,23 +655,21 @@ async function main() {
       }
       await sleep(800);
 
-      // ── Step 6: Click the ADD PLAYER confirm button in the modal ──────────
-      // After selecting a row, the modal shows an "ADD PLAYER" button — click it
-      const modalAddSel = 'button:has-text("ADD PLAYER"), button:has-text("Add Player")';
+      // ── Step 6: Click ADD PLAYER confirm in the modal ─────────────────────
+      // The modal footer has ADD PLAYER next to CANCEL — target it via CANCEL sibling
       try {
-        const btns = page.locator(modalAddSel);
-        const count = await btns.count({ timeout: 3000 });
-        // There may be two: the list-level button (which opened the modal) is hidden,
-        // so we just click the last visible one
-        let clicked = false;
-        for (let bi = count - 1; bi >= 0; bi--) {
-          if (await btns.nth(bi).isVisible({ timeout: 500 })) {
-            await btns.nth(bi).click();
-            clicked = true;
-            break;
-          }
+        // Find the ADD PLAYER button that is a sibling/near the CANCEL button
+        const cancelBtn = page.locator('button:has-text("CANCEL")');
+        const modalFooter = cancelBtn.locator('..');
+        let addPlayerInModal = modalFooter.locator('button:has-text("ADD PLAYER"), button:has-text("Add Player")');
+        let count = await addPlayerInModal.count().catch(() => 0);
+        if (count === 0) {
+          // Fallback: grab parent's parent
+          addPlayerInModal = cancelBtn.locator('../..').locator('button:has-text("ADD PLAYER"), button:has-text("Add Player")');
+          count = await addPlayerInModal.count().catch(() => 0);
         }
-        if (!clicked) throw new Error('no visible ADD PLAYER button in modal');
+        if (count === 0) throw new Error('ADD PLAYER button not found in modal');
+        await addPlayerInModal.first().click();
       } catch (e) {
         await saveScreenshot(page, `modal-add-btn-${player.rank}`);
         console.log(`SKIP (modal confirm: ${e.message.substring(0, 40)})`);

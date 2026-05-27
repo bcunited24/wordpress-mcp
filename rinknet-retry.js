@@ -169,26 +169,54 @@ async function main() {
   const page    = await context.newPage();
 
   // ── Login ──────────────────────────────────────────────────────────────────
+  let loginCompleted = false;
+  page.on('request', req => {
+    if (req.url().includes('/users/loginFromAuthPortal')) loginCompleted = true;
+  });
+
   console.log('→ Logging in…');
-  await page.goto('https://accounts.rinknet.com/#/', { waitUntil: 'domcontentloaded' });
+  await page.goto('https://accounts.rinknet.com/', { waitUntil: 'domcontentloaded' });
   await sleep(2000);
 
-  // Fill credentials wherever they appear
-  const userField = page.locator('input[type="email"], input[name="username"], input[name="email"]').first();
-  await userField.fill(USERNAME).catch(() => {});
-  const passField = page.locator('input[type="password"]').first();
-  await passField.fill(PASSWORD).catch(() => {});
-  await passField.press('Enter');
-  await sleep(4000);
+  // Fill email
+  for (const sel of ['input[type="email"]','input[name="email"]','input[name="username"]','input[type="text"]']) {
+    try {
+      const el = page.locator(sel).first();
+      if (await el.isVisible({ timeout: 2000 })) { await el.fill(USERNAME); break; }
+    } catch (_) {}
+  }
+  await sleep(500);
 
-  // If still on accounts domain, try clicking Sign In button
-  if (page.url().includes('accounts.rinknet.com')) {
-    await page.locator('button:has-text("Sign In"), button:has-text("LOG IN"), button[type="submit"]')
-      .first().click().catch(() => {});
-    await sleep(4000);
+  // Fill password
+  try {
+    const pw = page.locator('input[type="password"]').first();
+    if (await pw.isVisible({ timeout: 3000 })) {
+      await pw.fill(PASSWORD);
+    } else {
+      console.log('  ⚠ Password field not visible — please type it in the browser');
+    }
+  } catch (_) {
+    console.log('  ⚠ Password field not found — please type it in the browser');
+  }
+  await sleep(500);
+
+  // Submit
+  try {
+    await page.locator('button[type="submit"]').first().click();
+  } catch (_) {
+    await page.keyboard.press('Enter').catch(() => {});
   }
 
-  // Navigate to the ops portal
+  // Wait up to 2 minutes for loginFromAuthPortal (handles 2FA etc.)
+  console.log('  Waiting for login… (enter 2FA in the browser if prompted)');
+  for (let i = 0; i < 120; i++) {
+    if (loginCompleted) break;
+    await sleep(1000);
+  }
+  if (!loginCompleted) console.log('  ⚠ Auth not confirmed — proceeding anyway');
+  await sleep(2000);
+
+  // Navigate to ops portal if needed
   if (!page.url().includes('ops.rinknet.com')) {
     await page.goto('https://ops.rinknet.com/#/home', { waitUntil: 'domcontentloaded' });
     await sleep(3000);

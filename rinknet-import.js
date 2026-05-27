@@ -605,8 +605,8 @@ async function main() {
       }
       if (!searchBox) { console.log('SKIP (no search box)'); failed++; continue; }
 
-      // Search with last name + first initial (e.g. "Boisvert T")
-      const searchTerm = `${player.last} ${player.first.charAt(0)}`;
+      // Search with first initial + last name (e.g. "T Boisvert")
+      const searchTerm = `${player.first.charAt(0)} ${player.last}`;
       await searchBox.fill(searchTerm);
       await sleep(DELAY_MS * 1.5);
 

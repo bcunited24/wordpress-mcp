@@ -656,8 +656,8 @@ async function main() {
         continue;
       }
 
-      // Search by last name only — RinkNet auto-searches as you type
-      const searchTerm = player.last;
+      // Search: first initial + last name, e.g. "J McKinnon" or "T Boisvert"
+      const searchTerm = `${player.first.charAt(0)} ${player.last}`;
       await searchInput.click();
       await searchInput.fill(searchTerm);
       await sleep(2500); // wait for auto-search results to load

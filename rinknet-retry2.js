@@ -54,7 +54,7 @@ function saveScreenshot(page, name) {
   return page.screenshot({ path: file, fullPage: false }).catch(() => {});
 }
 
-const COMBINING_MARKS = new RegExp('[̀-ͯ]', 'g');
+const COMBINING_MARKS = new RegExp('[\u0300-\u036f]', 'g');
 function stripAccents(str) {
   return str.normalize('NFD').replace(COMBINING_MARKS, '');
 }
@@ -300,12 +300,17 @@ async function main() {
       }
 
       // ── Step 6: Click the best matching row ─────────────────────────────
-      // Prefer /2010, then /2009, then any row with first segment of last name,
-      // then just first row — don't require exact name match (accents differ).
-      const baseName = stripAccents(player.last.split(/[-'\s]/)[0]);
+      // Try both the accented original and the stripped form — RinkNet displays
+      // accented names in the results table, so has-text("Gregoire") won't match
+      // "Grégoire". Trying both ensures we find the row either way.
+      const baseName         = stripAccents(player.last.split(/[-'\s]/)[0]);
+      const baseNameAccented = player.last.split(/[-'\s]/)[0];
       const rowTried = [
+        `tr:has-text("${baseNameAccented}"):has-text("/2010")`,
         `tr:has-text("${baseName}"):has-text("/2010")`,
+        `tr:has-text("${baseNameAccented}"):has-text("/2009")`,
         `tr:has-text("${baseName}"):has-text("/2009")`,
+        `tr:has-text("${baseNameAccented}")`,
         `tr:has-text("${baseName}")`,
         'table tbody tr:first-child',
       ];

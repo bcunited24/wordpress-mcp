@@ -512,10 +512,21 @@ async function main() {
   }
 
   if (!listId) {
-    console.log('\n  Please create a list named "2026 NZ Rankings" manually in the browser.');
-    console.log('  Then click on it, look at the browser URL for the number, and type it here:');
-    listId = (await readLine()).trim().replace(/\D/g, '');
-    console.log(`  ✓ Using list ID: ${listId}`);
+    // API returned 401 — navigate to create page and let the browser do it
+    console.log('\n  Navigating to create page. In the browser:');
+    console.log(`  1. Type "${LIST_NAME}" in the description/name field`);
+    console.log('  2. Click Save');
+    console.log('  The script will continue automatically once it detects the list was created...');
+    await page.goto('https://ops.rinknet.com/#/lists/create', { waitUntil: 'domcontentloaded' });
+    // Wait up to 3 minutes for the user to create the list (response handler captures the ID)
+    for (let i = 0; i < 180; i++) {
+      if (listId) { console.log(`  ✓ List detected (ID: ${listId})`); break; }
+      await sleep(1000);
+    }
+    if (!listId) {
+      console.log('  Could not auto-detect list ID. Type the number from the browser URL:');
+      listId = (await readLine()).trim().replace(/\D/g, '');
+    }
   }
 
   await saveScreenshot(page, '02-list-created');
@@ -568,7 +579,7 @@ async function main() {
       if (!addBtnVisible) {
         await page.goto(`https://ops.rinknet.com/#/lists/view/${listId}`, { waitUntil: 'domcontentloaded' });
         try {
-          await page.waitForSelector(addBtnSel, { timeout: 15000 });
+          await page.waitForSelector(addBtnSel, { timeout: 30000 });
           addBtnVisible = true;
         } catch (_) {}
       }
@@ -593,20 +604,33 @@ async function main() {
         } catch (_) {}
       }
       if (!searchBox) { console.log('SKIP (no search box)'); failed++; continue; }
-      await searchBox.fill(player.last);
+
+      // Search with last name + first initial (e.g. "Boisvert T")
+      const searchTerm = `${player.last} ${player.first.charAt(0)}`;
+      await searchBox.fill(searchTerm);
       await sleep(DELAY_MS * 1.5);
 
-      // Click first autocomplete / dropdown result
+      // Press Enter to submit the search
+      await searchBox.press('Enter');
+      await sleep(DELAY_MS * 2);
+
+      // Click the best matching result — prefer rows that match both last and first name
+      // Also try to match 2009 or 2010 birth year as user confirmed these are 2009/2010 players
       let resultClicked = false;
-      for (const sel of [
-        `[role="option"]:has-text("${player.last}")`,
+      const nameSels = [
+        // Most specific: both last and first name in same row
+        `tr:has-text("${player.last}"):has-text("${player.first}")`,
         `li:has-text("${player.last}"):has-text("${player.first}")`,
+        `[role="option"]:has-text("${player.last}"):has-text("${player.first}")`,
+        // Less specific: last name only
+        `tr:has-text("${player.last}")`,
         `li:has-text("${player.last}")`,
+        `[role="option"]:has-text("${player.last}")`,
         '[role="option"]',
-        '[class*="autocomplete"] li', '[class*="dropdown-item"]',
-        '[class*="suggestion"]', '[class*="result"] li',
-        '.pac-item', 'ul li:visible',
-      ]) {
+        '[class*="result"] tr', '[class*="result"] li',
+        'table tbody tr:visible',
+      ];
+      for (const sel of nameSels) {
         try {
           const el = page.locator(sel).first();
           if (await el.isVisible({ timeout: 1500 })) {
@@ -616,21 +640,12 @@ async function main() {
           }
         } catch (_) {}
       }
-      // If no autocomplete, try pressing Enter
       if (!resultClicked) {
-        await searchBox.press('Enter');
-        await sleep(DELAY_MS);
-        // Try selecting from a results table
-        for (const sel of [
-          `tr:has-text("${player.last}"):has-text("${player.first}")`,
-          `tr:has-text("${player.last}")`,
-          `[class*="result"]:has-text("${player.last}")`,
-        ]) {
-          try {
-            const el = page.locator(sel).first();
-            if (await el.isVisible({ timeout: 1000 })) { await el.click(); resultClicked = true; break; }
-          } catch (_) {}
-        }
+        // Try clicking Add button directly (some UIs add from search results inline)
+        try {
+          const addInRow = page.locator(`tr:has-text("${player.last}") button, tr:has-text("${player.last}") a`).first();
+          if (await addInRow.isVisible({ timeout: 1000 })) { await addInRow.click(); resultClicked = true; }
+        } catch (_) {}
       }
 
       await sleep(DELAY_MS);
@@ -689,12 +704,17 @@ async function main() {
       console.log(`✓`);
       added++;
 
+      // Always navigate back to list view so next player starts from a known good state
+      await page.goto(`https://ops.rinknet.com/#/lists/view/${listId}`, { waitUntil: 'domcontentloaded' });
+      await sleep(1500);
+
     } catch (err) {
       console.log(`ERR: ${err.message.split('\n')[0].substring(0, 60)}`);
       failed++;
-      // Close any open dialog
+      // Close any open dialog and return to list view
       try { await page.keyboard.press('Escape'); } catch (_) {}
-      await sleep(DELAY_MS);
+      await page.goto(`https://ops.rinknet.com/#/lists/view/${listId}`, { waitUntil: 'domcontentloaded' }).catch(() => {});
+      await sleep(1500);
     }
   }
 

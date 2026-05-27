@@ -524,13 +524,13 @@ async function main() {
     console.log(`  1. Type "${LIST_NAME}" in the description/name field`);
     console.log('  2. Click Save');
     console.log('  The script will continue automatically once it detects the list was created...');
-    await page.goto('https://ops.rinknet.com/#/lists/create', { waitUntil: 'domcontentloaded' });
+    await page.goto('https://ops.rinknet.com/#/home/lists/create', { waitUntil: 'domcontentloaded' });
     // Wait up to 3 minutes — check both the response handler and the browser URL
     for (let i = 0; i < 180; i++) {
       if (listId) { console.log(`\n  ✓ List detected (ID: ${listId})`); break; }
       // Also try reading the ID directly from the browser URL
       const curUrl = page.url();
-      const urlM = curUrl.match(/#\/lists\/(?:view\/)?(-?\d+)/);
+      const urlM = curUrl.match(/#\/home\/lists\/view\/(-?\d+)/);
       if (urlM && urlM[1]) {
         listId = urlM[1];
         console.log(`\n  ✓ List detected from URL (ID: ${listId})`);
@@ -548,13 +548,13 @@ async function main() {
 
   // ── STEP 3: Navigate to the list view page ────────────────────────────────
   console.log('\n[3/4] Navigating to list view...');
-  await page.goto(`https://ops.rinknet.com/#/lists/view/${listId}`, { waitUntil: 'domcontentloaded' });
+  await page.goto(`https://ops.rinknet.com/#/home/lists/view/${listId}`, { waitUntil: 'domcontentloaded' });
   await sleep(3000);
 
   // Wait up to 15 seconds for the Add Player button — confirms we're on the right page
   try {
     await page.waitForSelector(
-      'button:has-text("Add Player"), a:has-text("Add Player"), button:has-text("Add")',
+      'button:has-text("ADD PLAYER"), button:has-text("Add Player"), a:has-text("Add Player")',
       { timeout: 15000 }
     );
     console.log('  ✓ List view ready');
@@ -588,146 +588,173 @@ async function main() {
     process.stdout.write(`  [${String(player.rank).padStart(3)}/300] ${label.padEnd(35)} `);
 
     try {
-      // Check if Add Player button is already visible; if not, navigate back to list view
-      const addBtnSel = 'button:has-text("Add Player"), a:has-text("Add Player")';
-      let addBtnVisible = await page.locator(addBtnSel).first().isVisible().catch(() => false);
-      if (!addBtnVisible) {
-        await page.goto(`https://ops.rinknet.com/#/lists/view/${listId}`, { waitUntil: 'domcontentloaded' });
-        try {
-          await page.waitForSelector(addBtnSel, { timeout: 30000 });
-          addBtnVisible = true;
-        } catch (_) {}
+      // ── Step 1: Make sure we're on the list view page ──────────────────────
+      const curUrl = page.url();
+      if (!curUrl.includes(`/home/lists/view/${listId}`)) {
+        await page.goto(`https://ops.rinknet.com/#/home/lists/view/${listId}`, { waitUntil: 'domcontentloaded' });
+        await sleep(2500);
       }
-      if (!addBtnVisible) { console.log('SKIP (list view not reachable)'); failed++; continue; }
 
-      // Click Add Player button
-      const addBtn = page.locator(addBtnSel).first();
-      await addBtn.click();
-      await sleep(DELAY_MS);
-
-      // Type in search box
-      let searchBox = null;
-      for (const sel of [
-        'input[placeholder*="search" i]', 'input[placeholder*="player" i]',
-        'input[placeholder*="name" i]', 'input[type="search"]',
-        'input[name="search"]', 'input[name="player"]',
-        '[role="searchbox"]', 'input:visible',
-      ]) {
-        try {
-          const el = page.locator(sel).first();
-          if (await el.isVisible({ timeout: 1000 })) { searchBox = el; break; }
-        } catch (_) {}
-      }
-      if (!searchBox) {
-        // Save screenshot and HTML so we can see what the search page looks like
-        await saveScreenshot(page, `search-page-${player.rank}`);
-        const html = await page.content();
-        fs.writeFileSync(path.join(SCREENSHOTS_DIR, `search-page-${player.rank}.html`), html);
-        console.log(`SKIP (no search box) — screenshot saved to rinknet-screenshots/`);
+      // ── Step 2: Click the + ADD PLAYER button ─────────────────────────────
+      const addBtnSel = 'button:has-text("ADD PLAYER"), button:has-text("Add Player"), a:has-text("Add Player")';
+      try {
+        await page.waitForSelector(addBtnSel, { timeout: 15000 });
+      } catch (_) {
+        console.log('SKIP (list view not reachable)');
         failed++;
         continue;
       }
+      await page.locator(addBtnSel).first().click();
+      await sleep(1000);
 
-      // Search with first initial + last name (e.g. "T Boisvert")
-      const searchTerm = `${player.first.charAt(0)} ${player.last}`;
-      await searchBox.fill(searchTerm);
-      await sleep(DELAY_MS * 1.5);
-      await searchBox.press('Enter');
-      await sleep(DELAY_MS * 3); // wait longer for results to load
-
-      // Screenshot and HTML after search so we can see results
-      if (player.rank <= 3) {
-        await saveScreenshot(page, `search-results-${player.rank}`);
-        const html = await page.content();
-        fs.writeFileSync(path.join(SCREENSHOTS_DIR, `search-results-${player.rank}.html`), html);
+      // ── Step 3: Wait for the search modal ─────────────────────────────────
+      const searchInputSel = 'input[placeholder*="Search"], input[placeholder*="search"], input[placeholder*="Player"]';
+      let searchInput;
+      try {
+        await page.waitForSelector(searchInputSel, { timeout: 10000 });
+        searchInput = page.locator(searchInputSel).first();
+      } catch (_) {
+        await saveScreenshot(page, `modal-not-found-${player.rank}`);
+        console.log('SKIP (search modal did not open)');
+        failed++;
+        try { await page.keyboard.press('Escape'); } catch (_) {}
+        continue;
       }
 
-      // Click the best matching result
-      let resultClicked = false;
-      const nameSels = [
-        `tr:has-text("${player.last}"):has-text("${player.first}")`,
-        `td:has-text("${player.last}"):has-text("${player.first}")`,
-        `li:has-text("${player.last}"):has-text("${player.first}")`,
-        `[role="option"]:has-text("${player.last}"):has-text("${player.first}")`,
+      // ── Step 4: Search with first initial + last name ─────────────────────
+      const searchTerm = `${player.first.charAt(0)} ${player.last}`;
+      await searchInput.fill(searchTerm);
+      await sleep(DELAY_MS);
+      await searchInput.press('Enter');
+      await sleep(DELAY_MS * 3);
+
+      // ── Step 5: Select the best matching row ──────────────────────────────
+      // Prefer 2010 birth year, then 2009, then any row with last name
+      let rowClicked = false;
+      const rowSelectors = [
+        `tr:has-text("${player.last}"):has-text("2010")`,
+        `tr:has-text("${player.last}"):has-text("2009")`,
         `tr:has-text("${player.last}")`,
-        `td:has-text("${player.last}")`,
-        `li:has-text("${player.last}")`,
-        `[role="option"]:has-text("${player.last}")`,
-        '[role="option"]',
-        'table tbody tr:first-child td:first-child',
         'table tbody tr:first-child',
-        '[class*="result"] tr:first-child',
-        '[class*="player-item"]:first-child',
       ];
-      for (const sel of nameSels) {
+      for (const sel of rowSelectors) {
         try {
           const el = page.locator(sel).first();
           if (await el.isVisible({ timeout: 1500 })) {
             await el.click();
-            resultClicked = true;
+            rowClicked = true;
             break;
           }
         } catch (_) {}
       }
-      if (!resultClicked) {
-        console.log('(player not found in search)');
+      if (!rowClicked) {
+        await saveScreenshot(page, `no-result-${player.rank}`);
+        console.log('(not found in RinkNet)');
+        try { await page.keyboard.press('Escape'); } catch (_) {}
+        failed++;
+        continue;
+      }
+      await sleep(800);
+
+      // ── Step 6: Click the ADD PLAYER confirm button in the modal ──────────
+      // After selecting a row, the modal shows an "ADD PLAYER" button — click it
+      const modalAddSel = 'button:has-text("ADD PLAYER"), button:has-text("Add Player")';
+      try {
+        const btns = page.locator(modalAddSel);
+        const count = await btns.count({ timeout: 3000 });
+        // There may be two: the list-level button (which opened the modal) is hidden,
+        // so we just click the last visible one
+        let clicked = false;
+        for (let bi = count - 1; bi >= 0; bi--) {
+          if (await btns.nth(bi).isVisible({ timeout: 500 })) {
+            await btns.nth(bi).click();
+            clicked = true;
+            break;
+          }
+        }
+        if (!clicked) throw new Error('no visible ADD PLAYER button in modal');
+      } catch (e) {
+        await saveScreenshot(page, `modal-add-btn-${player.rank}`);
+        console.log(`SKIP (modal confirm: ${e.message.substring(0, 40)})`);
+        failed++;
+        try { await page.keyboard.press('Escape'); } catch (_) {}
+        continue;
       }
 
-      await sleep(DELAY_MS * 2); // wait for rank/rating form to appear
+      // ── Step 7: Wait for navigation to /addPlayer/ page ───────────────────
+      try {
+        await page.waitForURL('**/addPlayer/**', { timeout: 12000 });
+      } catch (_) {
+        if (!page.url().includes('addPlayer')) {
+          await saveScreenshot(page, `no-addplayer-${player.rank}`);
+          console.log('SKIP (addPlayer page not reached)');
+          failed++;
+          continue;
+        }
+      }
+      await sleep(800);
 
-      // Try to set ranking
-      let rankSet = false;
-      for (const sel of ['input[name="ranking"]','input[name="rank"]','input[placeholder*="rank" i]','input[id*="rank" i]','input[type="number"]']) {
+      // ── Step 8: Fill the Ranking input ────────────────────────────────────
+      for (const sel of [
+        'input[name="ranking"]', 'input[name="rank"]',
+        'input[placeholder*="rank" i]', 'input[id*="rank" i]',
+        'input[type="number"]', 'input[type="text"]',
+      ]) {
         try {
           const el = page.locator(sel).first();
-          if (await el.isVisible({ timeout: 800 })) {
+          if (await el.isVisible({ timeout: 1000 })) {
             await el.click({ clickCount: 3 });
             await el.fill(String(player.rank));
-            rankSet = true;
             break;
           }
         } catch (_) {}
       }
 
-      // Try to set star rating
-      const starStr = String(player.stars);
+      // ── Step 9: Set Star Rating select ────────────────────────────────────
+      // The dropdown values are like "4.5", "4.25" etc — normalize player.stars to match
+      const starValue = String(parseFloat(player.stars)); // 4.50 → "4.5"
       let ratingSet = false;
-      for (const sel of ['input[name="rating"]','input[name="stars"]','input[name="rating1"]','input[name="Rating1"]','input[placeholder*="rating" i]','input[placeholder*="star" i]']) {
-        try {
-          const el = page.locator(sel).first();
-          if (await el.isVisible({ timeout: 800 })) {
-            await el.click({ clickCount: 3 });
-            await el.fill(starStr);
+      try {
+        const selects = page.locator('select');
+        const selCount = await selects.count();
+        for (let si = 0; si < selCount; si++) {
+          const sel = selects.nth(si);
+          if (!await sel.isVisible({ timeout: 500 })) continue;
+          const opts = await sel.locator('option').allTextContents();
+          // Rating select has options that look like decimal numbers
+          if (opts.some(o => /^\d\.\d/.test(o.trim()))) {
+            await sel.selectOption(starValue);
             ratingSet = true;
             break;
           }
-        } catch (_) {}
-      }
+        }
+      } catch (_) {}
       if (!ratingSet) {
-        try {
-          await page.selectOption('select[name="rating"], select[name="stars"], select[name="rating1"], select', { value: starStr });
-          ratingSet = true;
-        } catch (_) {}
-      }
-      if (!ratingSet) {
-        try {
-          await page.locator(`[data-value="${starStr}"], [data-rating="${starStr}"], [title="${starStr}"]`).first().click({ timeout: 500 });
-          ratingSet = true;
-        } catch (_) {}
+        try { await page.selectOption('select', starValue); ratingSet = true; } catch (_) {}
       }
 
-      // Confirm / Save
-      for (const sel of ['button:has-text("Add")', 'button:has-text("Save")', 'button:has-text("OK")', 'button:has-text("Confirm")', 'button[type="submit"]:visible']) {
+      // ── Step 10: Click SAVE ───────────────────────────────────────────────
+      for (const sel of [
+        'button:has-text("SAVE")', 'button:has-text("Save")',
+        'button[type="submit"]', 'input[type="submit"]',
+      ]) {
         try {
           const el = page.locator(sel).first();
-          if (await el.isVisible({ timeout: 500 })) { await el.click(); break; }
+          if (await el.isVisible({ timeout: 1000 })) { await el.click(); break; }
         } catch (_) {}
       }
 
-      await sleep(DELAY_MS);
-      console.log(`✓`);
+      // ── Step 11: Wait for return to list view ─────────────────────────────
+      try {
+        await page.waitForFunction(
+          () => !window.location.href.includes('addPlayer'),
+          { timeout: 12000 }
+        );
+      } catch (_) {}
+      await sleep(1500);
+
+      console.log(`✓  (rank=${player.rank}, stars=${starValue})`);
       added++;
-      await sleep(2000); // let the SPA settle before next player
 
     } catch (err) {
       console.log(`ERR: ${err.message.split('\n')[0].substring(0, 60)}`);
@@ -742,7 +769,7 @@ async function main() {
   console.log('\n╔══════════════════════════════════════════╗');
   console.log(`║  Done!  ✓ ${String(added).padEnd(3)} added   ✗ ${String(failed).padEnd(3)} failed       ║`);
   console.log('╚══════════════════════════════════════════╝');
-  console.log(`\n  List URL: https://ops.rinknet.com/#/lists/view/${listId}`);
+  console.log(`\n  List URL: https://ops.rinknet.com/#/home/lists/view/${listId}`);
   console.log('  Browser stays open — close it when you\'re done reviewing.\n');
 
   // Save captured API info for debugging

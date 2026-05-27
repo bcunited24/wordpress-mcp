@@ -667,8 +667,9 @@ async function main() {
         continue;
       }
 
-      // Search: first initial + last name, stripping accents (e.g. "G Gregoire" not "G Grégoire")
-      const searchTerm = stripAccents(`${player.first.charAt(0)} ${player.last}`);
+      // Search: first 2 letters + last name (e.g. "Th Boisvert", "Ja McKinnon")
+      // Two letters reduces false matches vs. just an initial
+      const searchTerm = stripAccents(`${player.first.substring(0, 2)} ${player.last}`);
       await searchInput.click();
       await searchInput.fill(searchTerm);
       await sleep(2500); // wait for auto-search results to load

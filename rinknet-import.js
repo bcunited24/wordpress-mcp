@@ -596,69 +596,79 @@ async function main() {
       }
 
       // ── Step 2: Click the + ADD PLAYER button ─────────────────────────────
-      const addBtnSel = 'button:has-text("ADD PLAYER"), button:has-text("Add Player"), a:has-text("Add Player")';
-      try {
-        await page.waitForSelector(addBtnSel, { timeout: 15000 });
-      } catch (_) {
-        console.log('SKIP (list view not reachable)');
-        failed++;
-        continue;
-      }
-      await page.locator(addBtnSel).first().click();
-      await sleep(2000); // give the modal animation time to complete
-
-      // ── Step 3 + 4: Find the modal's search input and type into it ─────────
-      // The modal has a label "Search by Player's Name" above the input.
-      // We try several strategies so we never accidentally hit the header search bar.
-      const searchTerm = `${player.first.charAt(0)} ${player.last}`;
-      let searchInput = null;
-
-      // Strategy A: proper label association (best)
-      const byLabel = page.getByLabel("Search by Player's Name");
-      if (await byLabel.isVisible({ timeout: 2000 }).catch(() => false)) {
-        searchInput = byLabel;
-      }
-      // Strategy B: input inside a dialog/modal/overlay container
-      if (!searchInput) {
-        for (const sel of [
-          '[role="dialog"] input',
-          '[class*="modal"] input', '[class*="Modal"] input',
-          '[class*="dialog"] input', '[class*="Dialog"] input',
-          '[class*="overlay"] input', '[class*="Overlay"] input',
-          '[class*="popup"] input',
-        ]) {
+      // Use the selector that worked in earlier testing
+      const addBtnSel = 'button:has-text("Add Player"), a:has-text("Add Player")';
+      let triggerClicked = false;
+      for (const sel of [
+        'button:has-text("Add Player")',
+        'a:has-text("Add Player")',
+        'button:has-text("ADD PLAYER")',
+        'a:has-text("ADD PLAYER")',
+      ]) {
+        try {
           const el = page.locator(sel).first();
-          if (await el.isVisible({ timeout: 1000 }).catch(() => false)) {
-            searchInput = el;
+          if (await el.isVisible({ timeout: 5000 })) {
+            await el.scrollIntoViewIfNeeded();
+            await el.click();
+            triggerClicked = true;
             break;
           }
-        }
+        } catch (_) {}
       }
-      // Strategy C: page now has 2+ visible inputs; take the last one
-      // (header search bar is always first; modal input comes after)
-      if (!searchInput) {
-        const allInputs = page.locator('input:visible');
-        const cnt = await allInputs.count().catch(() => 0);
-        if (cnt >= 2) searchInput = allInputs.nth(cnt - 1);
-      }
-
-      if (!searchInput) {
-        await saveScreenshot(page, `modal-not-found-${player.rank}`);
-        console.log('SKIP (search modal did not open)');
+      if (!triggerClicked) {
+        console.log('SKIP (ADD PLAYER button not found)');
         failed++;
         continue;
       }
 
+      // ── Step 3: Wait for modal to open ────────────────────────────────────
+      // "Search by Player's Name" label text only exists inside the Add Player modal
+      try {
+        await page.waitForSelector('text=Search by Player', { timeout: 10000 });
+      } catch (_) {
+        await saveScreenshot(page, `modal-not-found-${player.rank}`);
+        console.log(`SKIP (modal did not open) url=${page.url().slice(-40)}`);
+        failed++;
+        continue;
+      }
+      await sleep(500);
+
+      // ── Step 4: Find the modal search input and type the search ───────────
+      // Header search bar is at the top (y < 150px); modal input is centered
+      // (y > 150px). We pick the input farthest down the page.
+      let searchInput = null;
+      const allInputEls = await page.locator('input').all();
+      let maxY = -1;
+      for (const el of allInputEls) {
+        const box = await el.boundingBox().catch(() => null);
+        if (box && box.y > maxY) { maxY = box.y; searchInput = el; }
+      }
+      if (!searchInput || maxY < 100) {
+        // All inputs are near top — fallback to last visible input
+        const vis = page.locator('input:visible');
+        const n = await vis.count().catch(() => 0);
+        if (n > 0) searchInput = vis.nth(n - 1);
+      }
+      if (!searchInput) {
+        await saveScreenshot(page, `no-input-${player.rank}`);
+        console.log('SKIP (could not find modal search input)');
+        failed++;
+        continue;
+      }
+
+      // Search by last name only — RinkNet auto-searches as you type
+      const searchTerm = player.last;
       await searchInput.click();
       await searchInput.fill(searchTerm);
-      await sleep(DELAY_MS * 3); // wait for auto-search results to load
+      await sleep(2500); // wait for auto-search results to load
 
       // ── Step 5: Select the best matching row ──────────────────────────────
-      // Prefer 2010 birth year, then 2009, then any row with last name
+      // Results table: "LastName, FirstName (Team)" | "MM/DD/YYYY" | Position | Team
+      // Prefer 2010 birth year, then 2009, then any row containing the last name
       let rowClicked = false;
       const rowSelectors = [
-        `tr:has-text("${player.last}"):has-text("2010")`,
-        `tr:has-text("${player.last}"):has-text("2009")`,
+        `tr:has-text("${player.last}"):has-text("/2010")`,
+        `tr:has-text("${player.last}"):has-text("/2009")`,
         `tr:has-text("${player.last}")`,
         'table tbody tr:first-child',
       ];
@@ -681,31 +691,32 @@ async function main() {
       }
       await sleep(800);
 
-      // ── Step 6: Click ADD PLAYER confirm in the modal ─────────────────────
-      // After a row is selected, the ADD PLAYER button in the modal becomes enabled.
-      // We find it by trying all ADD PLAYER / Add Player buttons and clicking the
-      // last visible one (modal button) rather than the background list button.
+      // ── Step 6: Click the ADD PLAYER confirm button inside the modal ─────────
+      // The modal confirm button is rendered LAST in the DOM (Angular CDK portal
+      // appends modal content to end of body). The trigger button comes earlier.
+      // After selecting a row, the confirm button becomes enabled (not disabled).
       try {
-        const allAddBtns = page.locator(
-          'button:has-text("ADD PLAYER"), button:has-text("Add Player"), ' +
-          'a:has-text("ADD PLAYER"), a:has-text("Add Player"), ' +
-          '[role="button"]:has-text("ADD PLAYER"), [role="button"]:has-text("Add Player")'
-        );
-        await allAddBtns.first().waitFor({ timeout: 3000 });
+        const allAddBtns = page.locator('button:has-text("Add Player"), button:has-text("ADD PLAYER")');
+        // Wait briefly for buttons to render
+        await allAddBtns.first().waitFor({ timeout: 5000 }).catch(() => {});
         const total = await allAddBtns.count();
+        // Click the LAST visible one — that is the modal confirm button
         let clicked = false;
-        // Click last visible one (the modal confirm button is rendered last in DOM)
         for (let bi = total - 1; bi >= 0; bi--) {
-          if (await allAddBtns.nth(bi).isVisible({ timeout: 500 }).catch(() => false)) {
-            await allAddBtns.nth(bi).click();
-            clicked = true;
-            break;
-          }
+          const btn = allAddBtns.nth(bi);
+          const vis = await btn.isVisible({ timeout: 300 }).catch(() => false);
+          if (!vis) continue;
+          // Skip if disabled
+          const disabled = await btn.isDisabled().catch(() => false);
+          if (disabled) continue;
+          await btn.click();
+          clicked = true;
+          break;
         }
-        if (!clicked) throw new Error('no clickable ADD PLAYER button found');
+        if (!clicked) throw new Error('no enabled ADD PLAYER button visible');
       } catch (e) {
         await saveScreenshot(page, `modal-add-btn-${player.rank}`);
-        console.log(`SKIP (modal confirm: ${e.message.substring(0, 40)})`);
+        console.log(`SKIP (confirm btn: ${e.message.substring(0, 40)})`);
         failed++;
         try { await page.keyboard.press('Escape'); } catch (_) {}
         continue;

@@ -398,18 +398,32 @@ async function main() {
   await page.goto('https://accounts.rinknet.com/', { waitUntil: 'domcontentloaded' });
   await sleep(2000);
 
-  // Fill email
-  try {
-    await page.locator('input[type="email"], input[name="email"], input[name="username"]').first().fill(USERNAME);
-    console.log('  ✓ Email filled');
-  } catch (_) {
-    console.log('  ⚠ Could not auto-fill email — please type it in the browser');
+  // Fill email — try several selectors; accounts.rinknet.com may use type=text
+  let emailFilled = false;
+  for (const sel of ['input[type="email"]','input[name="email"]','input[name="username"]','input[type="text"]']) {
+    try {
+      const el = page.locator(sel).first();
+      if (await el.isVisible({ timeout: 2000 })) {
+        await el.fill(USERNAME);
+        console.log(`  ✓ Email filled (${sel})`);
+        emailFilled = true;
+        break;
+      }
+    } catch (_) {}
   }
+  if (!emailFilled) console.log('  ⚠ Could not auto-fill email — please type it in the browser');
+
+  await sleep(500);
 
   // Fill password
   try {
-    await page.locator('input[type="password"]').first().fill(PASSWORD);
-    console.log('  ✓ Password filled');
+    const pw = page.locator('input[type="password"]').first();
+    if (await pw.isVisible({ timeout: 3000 })) {
+      await pw.fill(PASSWORD);
+      console.log('  ✓ Password filled');
+    } else {
+      console.log('  ⚠ Could not auto-fill password — please type it in the browser');
+    }
   } catch (_) {
     console.log('  ⚠ Could not auto-fill password — please type it in the browser');
   }
@@ -432,80 +446,84 @@ async function main() {
   console.log('  ✓ Logged in — now at:', page.url());
   await saveScreenshot(page, '01-logged-in');
 
-  // ── STEP 2: Navigate to Lists and create new list ─────────────────────────
+  // ── STEP 2: Create list via direct API call ───────────────────────────────
   console.log('\n[2/4] Creating list...');
-  await page.goto('https://ops.rinknet.com/#/lists/create', { waitUntil: 'domcontentloaded' });
-  await sleep(2000);
-  await saveScreenshot(page, '02-create-form');
 
-  // Fill list name — try name attribute "description" first (from captured API)
-  let nameFilled = false;
-  const nameSelectors = [
-    'input[name="description"]',
-    'textarea[name="description"]',
-    'input[name="name"]',
-    'input[name="listName"]',
-    'input[placeholder*="description" i]',
-    'input[placeholder*="name" i]',
-  ];
-  for (const sel of nameSelectors) {
-    try {
-      const el = page.locator(sel).first();
-      if (await el.isVisible({ timeout: 1500 })) {
-        await el.click({ clickCount: 3 });
-        await el.fill(LIST_NAME);
-        console.log(`  ✓ List name filled (${sel})`);
-        nameFilled = true;
-        break;
-      }
-    } catch (_) {}
-  }
-  if (!nameFilled) {
-    console.log('\n  ⚠ Could not find the list name field automatically.');
-    console.log(`  Please type "${LIST_NAME}" into the list name/description field, then press Enter here.`);
-    await waitForKeypress();
-  }
-
-  await sleep(500);
-
-  // Save the list
-  try {
-    await page.locator('button:has-text("Save"), button[type="submit"]').first().click();
-    console.log('  ✓ Save clicked');
-  } catch (_) {
-    console.log('  ⚠ Could not click Save — please click it manually, then press Enter here.');
-    await waitForKeypress();
-  }
-
-  // Wait for the list ID to be captured from the response
+  // Navigate to lists page first (activates session cookies for fetch)
+  await page.goto('https://ops.rinknet.com/#/home/lists', { waitUntil: 'domcontentloaded' });
   await sleep(3000);
 
-  // If we didn't capture listId from response, try to get it from the URL
-  if (!listId) {
-    const url = page.url();
-    const m   = url.match(/lists\/(?:view\/)?(\d+)/);
-    if (m) {
-      listId = m[1];
-      console.log(`  ✓ List ID from URL: ${listId}`);
+  // Pull season_id and type_id from existing lists so we use the right values
+  let season_id = 174507552;
+  let type_id   = 927908487;
+  try {
+    const cfg = await page.evaluate(async () => {
+      const r = await fetch('/lists?per_page=5', { credentials: 'same-origin' });
+      if (!r.ok) return null;
+      const d = await r.json();
+      const items = Array.isArray(d) ? d : (d.items || d.data || d.lists || []);
+      if (items.length > 0) return { season_id: items[0].season_id, type_id: items[0].type_id };
+      return null;
+    });
+    if (cfg && cfg.season_id) {
+      season_id = cfg.season_id;
+      type_id   = cfg.type_id;
+      console.log(`  ✓ season_id=${season_id}  type_id=${type_id}`);
     }
+  } catch (_) {}
+
+  // Create the list via API — no form filling needed
+  const today = new Date().toISOString().split('T')[0];
+  try {
+    const r = await page.evaluate(async (body) => {
+      const res = await fetch('/lists', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify(body),
+      });
+      const text = await res.text();
+      let json = null;
+      try { json = JSON.parse(text); } catch (_) {}
+      return { status: res.status, json, text };
+    }, { season_id, type_id, description: LIST_NAME, notes: null, tournament_id: null, date: today });
+
+    if (r.json && r.json.id) {
+      listId = r.json.id;
+      console.log(`  ✓ List "${LIST_NAME}" created (ID: ${listId})`);
+    } else {
+      console.log(`  ⚠ API returned ${r.status}: ${r.text.substring(0, 200)}`);
+    }
+  } catch (e) {
+    console.log(`  ⚠ API error: ${e.message}`);
   }
 
   if (!listId) {
-    console.log('\n  ⚠ Could not capture list ID automatically.');
-    console.log('  Look at the browser URL — it should contain a number like /lists/view/12345');
-    console.log('  Type that number here and press Enter:');
-    listId = await readLine();
+    console.log('\n  Please create a list named "2026 NZ Rankings" manually in the browser.');
+    console.log('  Then click on it, look at the browser URL for the number, and type it here:');
+    listId = (await readLine()).trim().replace(/\D/g, '');
+    console.log(`  ✓ Using list ID: ${listId}`);
   }
 
-  console.log(`  ✓ Using list ID: ${listId}`);
-  await saveScreenshot(page, '03-list-created');
+  await saveScreenshot(page, '02-list-created');
 
   // ── STEP 3: Navigate to the list view page ────────────────────────────────
   console.log('\n[3/4] Navigating to list view...');
   await page.goto(`https://ops.rinknet.com/#/lists/view/${listId}`, { waitUntil: 'domcontentloaded' });
-  await sleep(2000);
-  await saveScreenshot(page, '04-list-view');
-  console.log('  ✓ On list view page');
+  await sleep(3000);
+
+  // Wait up to 15 seconds for the Add Player button — confirms we're on the right page
+  try {
+    await page.waitForSelector(
+      'button:has-text("Add Player"), a:has-text("Add Player"), button:has-text("Add")',
+      { timeout: 15000 }
+    );
+    console.log('  ✓ List view ready');
+  } catch (_) {
+    console.log('  ⚠ Add Player button not visible. Navigate to the list in the browser, then press Enter.');
+    await waitForKeypress();
+  }
+  await saveScreenshot(page, '03-list-view');
 
   // ── STEP 4: Add all players ───────────────────────────────────────────────
   console.log(`\n[4/4] Adding ${PLAYERS.length} players...`);
@@ -531,21 +549,20 @@ async function main() {
     process.stdout.write(`  [${String(player.rank).padStart(3)}/300] ${label.padEnd(35)} `);
 
     try {
-      // Make sure we're still on the list view page
-      if (!page.url().includes(`/lists/view/${listId}`) && !page.url().includes(`/lists/${listId}`) && !page.url().includes(`#/lists/view/${listId}`)) {
+      // Check if Add Player button is already visible; if not, navigate back to list view
+      const addBtnSel = 'button:has-text("Add Player"), a:has-text("Add Player")';
+      let addBtnVisible = await page.locator(addBtnSel).first().isVisible().catch(() => false);
+      if (!addBtnVisible) {
         await page.goto(`https://ops.rinknet.com/#/lists/view/${listId}`, { waitUntil: 'domcontentloaded' });
-        await sleep(1500);
-      }
-
-      // Click Add Player button
-      let addBtn = null;
-      for (const sel of ['button:has-text("Add Player")', 'a:has-text("Add Player")', '[class*="add-player"]', 'button:has-text("Add")', 'a:has-text("Add")']) {
         try {
-          const el = page.locator(sel).first();
-          if (await el.isVisible({ timeout: 1000 })) { addBtn = el; break; }
+          await page.waitForSelector(addBtnSel, { timeout: 15000 });
+          addBtnVisible = true;
         } catch (_) {}
       }
-      if (!addBtn) { console.log('SKIP (no Add button)'); failed++; continue; }
+      if (!addBtnVisible) { console.log('SKIP (list view not reachable)'); failed++; continue; }
+
+      // Click Add Player button
+      const addBtn = page.locator(addBtnSel).first();
       await addBtn.click();
       await sleep(DELAY_MS);
 

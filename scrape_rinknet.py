@@ -17,13 +17,9 @@ import asyncio
 import csv
 import re
 import sys
+from datetime import datetime
 from pathlib import Path
 
-TARGET_LIST_URL = (
-    "https://ops.rinknet.com/#/home/players/addressPhone"
-    "?listIds=942916689,-1350718491"
-)
-OUTPUT_FILE = Path(__file__).parent / "parent_emails.csv"
 EMAIL_RE = re.compile(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}")
 
 
@@ -384,14 +380,17 @@ async def main() -> None:
         print("Share a screenshot of what the browser showed and I can adjust the script.")
         return
 
+    timestamp   = datetime.now().strftime("%Y-%m-%d_%H-%M")
+    output_file = Path(__file__).parent / f"parent_emails_{timestamp}.csv"
+
     fieldnames = ["player", "family_member", "email"]
 
-    with open(OUTPUT_FILE, "w", newline="", encoding="utf-8") as fh:
+    with open(output_file, "w", newline="", encoding="utf-8") as fh:
         writer = csv.DictWriter(fh, fieldnames=fieldnames, extrasaction="ignore")
         writer.writeheader()
         writer.writerows(unique)
 
-    print(f"Saved → {OUTPUT_FILE}")
+    print(f"Saved → {output_file}")
     print("Done!")
 
 

@@ -1,17 +1,15 @@
 #!/usr/bin/env node
 /**
- * RinkNet Rankings Importer
+ * RinkNet Rankings Importer v2
  *
- * Automates importing 300 player rankings into a RinkNet List with star ratings.
+ * Imports 300 player rankings into a RinkNet List with star ratings.
  *
- * ── SETUP (one-time) ──────────────────────────────────────────────────────────
- *  1. Install Node.js  →  https://nodejs.org  (download the LTS version)
- *  2. Open a terminal / command prompt in this folder, then run:
- *       npm install playwright
- *       npx playwright install chromium
- *  3. Run the script:
- *       node rinknet-import.js
- * ─────────────────────────────────────────────────────────────────────────────
+ * SETUP (one-time):
+ *   npm install playwright
+ *   npx playwright install chromium
+ *
+ * RUN:
+ *   node rinknet-import.js
  */
 
 'use strict';
@@ -20,15 +18,14 @@ const { chromium } = require('playwright');
 const fs   = require('fs');
 const path = require('path');
 
-// ── CONFIGURATION ─────────────────────────────────────────────────────────────
-const USERNAME  = 'bcollins@neutralzone.net';
-const PASSWORD  = 'NZhockey24!';
-const LIST_NAME = '2026 NZ Rankings';   // ← Change this to whatever you want the list called
-const DELAY_MS  = 600;                  // Pause between actions (increase if your internet is slow)
+// ── CONFIG ────────────────────────────────────────────────────────────────────
+const USERNAME        = 'bcollins@neutralzone.net';
+const PASSWORD        = 'NZhockey24!';
+const LIST_NAME       = '2026 NZ Rankings';  // ← edit this
+const DELAY_MS        = 800;
 const SCREENSHOTS_DIR = './rinknet-screenshots';
 // ─────────────────────────────────────────────────────────────────────────────
 
-// ── PLAYER DATA (from Google Sheet) ──────────────────────────────────────────
 const PLAYERS = [
   { rank:1,   last:'Boisvert',            first:'Thomas',            pos:'F',    team:'Mount St. Charles',         stars:4.50 },
   { rank:2,   last:'McKinnon',            first:'Jacob',             pos:'RW',   team:'Seminaire St-Francois',     stars:4.50 },
@@ -334,386 +331,379 @@ const PLAYERS = [
 
 // ── HELPERS ───────────────────────────────────────────────────────────────────
 
-function sleep(ms) {
-  return new Promise(r => setTimeout(r, ms));
-}
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-function screenshot(page, name) {
+function saveScreenshot(page, name) {
   if (!fs.existsSync(SCREENSHOTS_DIR)) fs.mkdirSync(SCREENSHOTS_DIR, { recursive: true });
   const file = path.join(SCREENSHOTS_DIR, `${Date.now()}-${name}.png`);
-  return page.screenshot({ path: file, fullPage: true }).then(() => console.log(`  📸 Saved: ${file}`));
-}
-
-// Attempt to click the first matching selector from a list
-async function tryClick(page, selectors, description) {
-  for (const sel of selectors) {
-    try {
-      const el = page.locator(sel).first();
-      if (await el.isVisible({ timeout: 2000 })) {
-        await el.click();
-        console.log(`  ✓ Clicked: ${description} (${sel})`);
-        return true;
-      }
-    } catch (_) {}
-  }
-  console.log(`  ⚠ Could not find: ${description}`);
-  return false;
-}
-
-// Fill the first visible input from a list of selectors
-async function tryFill(page, selectors, value, description) {
-  for (const sel of selectors) {
-    try {
-      const el = page.locator(sel).first();
-      if (await el.isVisible({ timeout: 2000 })) {
-        await el.fill(value);
-        console.log(`  ✓ Filled: ${description}`);
-        return true;
-      }
-    } catch (_) {}
-  }
-  console.log(`  ⚠ Could not fill: ${description}`);
-  return false;
+  return page.screenshot({ path: file, fullPage: false }).catch(() => {});
 }
 
 // ── MAIN ──────────────────────────────────────────────────────────────────────
 
 async function main() {
-  console.log('╔═══════════════════════════════════════════╗');
-  console.log('║      RinkNet Rankings Importer            ║');
-  console.log('╚═══════════════════════════════════════════╝\n');
+  console.log('╔══════════════════════════════════════════╗');
+  console.log('║    RinkNet Rankings Importer  v2         ║');
+  console.log('╚══════════════════════════════════════════╝\n');
 
-  // Track all non-GET API calls so we can learn the write API
-  const capturedWrites = [];
-  let sessionKey = null;
+  // State captured from network
+  let listId        = null;
+  let authToken     = null;
+  let addPlayerBody = null;  // format of the add-player API call
 
-  const browser = await chromium.launch({
-    headless: false,           // You can watch the browser work
-    slowMo: 150,               // Slight slow-down so you can follow along
+  const browser = await chromium.launch({ headless: false, slowMo: 100 });
+  const context  = await browser.newContext();
+  const page     = await context.newPage();
+
+  // ── Intercept requests & responses ────────────────────────────────────────
+  page.on('request', req => {
+    const h = req.headers();
+    const t = h['authorization'] || h['x-session-key'] || h['x-auth-token'];
+    if (t && t.length > 10) authToken = t;
+
+    const url = req.url();
+    const method = req.method();
+    if (method !== 'GET' && method !== 'OPTIONS' && url.includes('ops.rinknet.com')) {
+      const body = req.postData() || '';
+      console.log(`  → ${method} ${url.replace('https://ops.rinknet.com','')}${body ? `  ${body.substring(0,100)}` : ''}`);
+      // Capture the format of adding a player to a list
+      if (url.match(/\/lists\/\d+\/details/) && method === 'POST') {
+        addPlayerBody = body;
+      }
+    }
   });
 
-  const context = await browser.newContext();
-  const page    = await context.newPage();
-
-  // ── Intercept every request ──────────────────────────────────────────────
-  await page.route('**/*', async route => {
-    const req     = route.request();
-    const url     = req.url();
-    const method  = req.method();
-    const headers = req.headers();
-
-    // Capture session/auth tokens
-    const auth = headers['authorization'] || headers['x-session-key'] || headers['x-api-key'];
-    if (auth && auth.length > 10) sessionKey = auth;
-
-    // Log and capture non-GET calls (these are writes)
-    if (method !== 'GET' && method !== 'OPTIONS' && url.includes('rinknet')) {
-      const body = req.postData();
-      capturedWrites.push({ url, method, headers, body });
-      console.log(`  → ${method} ${url}`);
-      if (body) console.log(`     Body: ${body.substring(0, 120)}`);
+  page.on('response', async res => {
+    const url = res.url();
+    const method = res.request().method();
+    // Capture list ID from create response
+    if (url === 'https://ops.rinknet.com/lists' && method === 'POST') {
+      try {
+        const json = await res.json();
+        if (json && json.id) {
+          listId = json.id;
+          console.log(`  ✓ List created with ID: ${listId}`);
+        }
+      } catch (_) {}
     }
-
-    await route.continue();
+    // Capture list ID from any lists response
+    if (url.match(/ops\.rinknet\.com\/lists\/\d+/) && method === 'GET') {
+      const m = url.match(/lists\/(\d+)/);
+      if (m && !listId) listId = m[1];
+    }
   });
 
   // ── STEP 1: Login ─────────────────────────────────────────────────────────
-  console.log('\n[1/4] Logging in to RinkNet...');
+  console.log('[1/4] Logging in...');
   await page.goto('https://accounts.rinknet.com/', { waitUntil: 'domcontentloaded' });
   await sleep(2000);
-  await screenshot(page, '01-login-page');
 
-  // Try common email/password field selectors
-  await tryFill(page, [
-    'input[type="email"]',
-    'input[name="email"]',
-    'input[name="username"]',
-    'input[name="login"]',
-    'input[placeholder*="email" i]',
-    'input[placeholder*="user" i]',
-    'input[id*="email" i]',
-    'input[id*="user" i]',
-  ], USERNAME, 'email/username field');
+  // Fill email
+  try {
+    await page.locator('input[type="email"], input[name="email"], input[name="username"]').first().fill(USERNAME);
+    console.log('  ✓ Email filled');
+  } catch (_) {
+    console.log('  ⚠ Could not auto-fill email — please type it in the browser');
+  }
 
-  await tryFill(page, [
-    'input[type="password"]',
-    'input[name="password"]',
-    'input[placeholder*="pass" i]',
-    'input[id*="pass" i]',
-  ], PASSWORD, 'password field');
+  // Fill password
+  try {
+    await page.locator('input[type="password"]').first().fill(PASSWORD);
+    console.log('  ✓ Password filled');
+  } catch (_) {
+    console.log('  ⚠ Could not auto-fill password — please type it in the browser');
+  }
 
   await sleep(500);
-
-  // Click submit
-  const submitted = await tryClick(page, [
-    'button[type="submit"]',
-    'input[type="submit"]',
-    'button:has-text("Login")',
-    'button:has-text("Sign in")',
-    'button:has-text("Log in")',
-    'button:has-text("Connexion")',
-    '[class*="login" i] button',
-    '[class*="submit" i]',
-  ], 'login button');
-
-  if (!submitted) {
-    console.log('\n  Browser is open — please log in manually, then press Enter here.');
-    await waitForKeypress();
+  try {
+    await page.locator('button[type="submit"]').first().click();
+  } catch (_) {
+    await page.keyboard.press('Enter');
   }
 
-  await page.waitForLoadState('networkidle', { timeout: 20000 }).catch(() => {});
+  // Wait for redirect to ops.rinknet.com (may include a 2FA step)
+  console.log('  Waiting for login... (if a 2FA code is needed, enter it in the browser)');
+  try {
+    await page.waitForURL('**/ops.rinknet.com/**', { timeout: 60000 });
+  } catch (_) {
+    await sleep(5000);
+  }
   await sleep(2000);
-  await screenshot(page, '02-after-login');
-  console.log('  ✓ Login complete');
+  console.log('  ✓ Logged in — now at:', page.url());
+  await saveScreenshot(page, '01-logged-in');
 
-  // ── STEP 2: Navigate to Lists ─────────────────────────────────────────────
-  console.log('\n[2/4] Navigating to Lists...');
-
-  const navClicked = await tryClick(page, [
-    'a:has-text("Lists")',
-    '[href*="list" i]',
-    '[routerlink*="list" i]',
-    'nav a:has-text("List")',
-    '[class*="menu" i] a:has-text("List")',
-    '[class*="nav" i] a:has-text("List")',
-    'li:has-text("Lists") a',
-    'li:has-text("List") a',
-    'span:has-text("Lists")',
-  ], 'Lists navigation item');
-
+  // ── STEP 2: Navigate to Lists and create new list ─────────────────────────
+  console.log('\n[2/4] Creating list...');
+  await page.goto('https://ops.rinknet.com/lists/create', { waitUntil: 'domcontentloaded' });
   await sleep(2000);
-  await screenshot(page, '03-lists-page');
+  await saveScreenshot(page, '02-create-form');
 
-  if (!navClicked) {
-    console.log('\n  ⚠ Could not find the Lists menu automatically.');
-    console.log('  Please click on "Lists" in the RinkNet menu, then press Enter here.');
-    await waitForKeypress();
-    await screenshot(page, '03b-lists-manual');
-  }
-
-  // ── STEP 3: Create new list ───────────────────────────────────────────────
-  console.log(`\n[3/4] Creating new list: "${LIST_NAME}"...`);
-
-  const createClicked = await tryClick(page, [
-    'button:has-text("New List")',
-    'button:has-text("Create List")',
-    'button:has-text("Add List")',
-    'button:has-text("New")',
-    'button:has-text("Create")',
-    'a:has-text("New List")',
-    'a:has-text("Create List")',
-    '[class*="add" i]:has-text("List")',
-    '[data-action="create"]',
-    '[title*="new" i]',
-    '[title*="create" i]',
-    '[aria-label*="new list" i]',
-  ], 'Create/New List button');
-
-  await sleep(1500);
-
-  if (!createClicked) {
-    console.log('\n  ⚠ Could not find the "New List" button automatically.');
-    console.log('  Please click the button to create a new list, then press Enter here.');
-    await waitForKeypress();
-  }
-
-  // Fill in the list name
-  await tryFill(page, [
-    'input[placeholder*="name" i]',
-    'input[placeholder*="list" i]',
-    'input[name="name"]',
+  // Fill list name — try name attribute "description" first (from captured API)
+  let nameFilled = false;
+  const nameSelectors = [
     'input[name="description"]',
+    'textarea[name="description"]',
+    'input[name="name"]',
     'input[name="listName"]',
-    'input[id*="name" i]',
-    'input[id*="description" i]',
-    'textarea[placeholder*="name" i]',
-    'input[type="text"]:visible',
-  ], LIST_NAME, 'list name field');
+    'input[placeholder*="description" i]',
+    'input[placeholder*="name" i]',
+  ];
+  for (const sel of nameSelectors) {
+    try {
+      const el = page.locator(sel).first();
+      if (await el.isVisible({ timeout: 1500 })) {
+        await el.click({ clickCount: 3 });
+        await el.fill(LIST_NAME);
+        console.log(`  ✓ List name filled (${sel})`);
+        nameFilled = true;
+        break;
+      }
+    } catch (_) {}
+  }
+  if (!nameFilled) {
+    console.log('\n  ⚠ Could not find the list name field automatically.');
+    console.log(`  Please type "${LIST_NAME}" into the list name/description field, then press Enter here.`);
+    await waitForKeypress();
+  }
 
   await sleep(500);
 
-  // Save the new list
-  await tryClick(page, [
-    'button:has-text("Save")',
-    'button:has-text("Create")',
-    'button:has-text("OK")',
-    'button:has-text("Confirm")',
-    'button[type="submit"]',
-    '[class*="save" i]',
-    '[class*="confirm" i]',
-  ], 'Save list button');
+  // Save the list
+  try {
+    await page.locator('button:has-text("Save"), button[type="submit"]').first().click();
+    console.log('  ✓ Save clicked');
+  } catch (_) {
+    console.log('  ⚠ Could not click Save — please click it manually, then press Enter here.');
+    await waitForKeypress();
+  }
 
+  // Wait for the list ID to be captured from the response
+  await sleep(3000);
+
+  // If we didn't capture listId from response, try to get it from the URL
+  if (!listId) {
+    const url = page.url();
+    const m   = url.match(/lists\/(?:view\/)?(\d+)/);
+    if (m) {
+      listId = m[1];
+      console.log(`  ✓ List ID from URL: ${listId}`);
+    }
+  }
+
+  if (!listId) {
+    console.log('\n  ⚠ Could not capture list ID automatically.');
+    console.log('  Look at the browser URL — it should contain a number like /lists/view/12345');
+    console.log('  Type that number here and press Enter:');
+    listId = await readLine();
+  }
+
+  console.log(`  ✓ Using list ID: ${listId}`);
+  await saveScreenshot(page, '03-list-created');
+
+  // ── STEP 3: Navigate to the list view page ────────────────────────────────
+  console.log('\n[3/4] Navigating to list view...');
+  await page.goto(`https://ops.rinknet.com/lists/view/${listId}`, { waitUntil: 'domcontentloaded' });
   await sleep(2000);
-  await screenshot(page, '04-list-created');
+  await saveScreenshot(page, '04-list-view');
+  console.log('  ✓ On list view page');
 
-  // ── STEP 4: Add players ───────────────────────────────────────────────────
-  console.log(`\n[4/4] Adding ${PLAYERS.length} players to the list...`);
-  console.log('      This will take several minutes — the browser will do it automatically.\n');
+  // ── STEP 4: Add all players ───────────────────────────────────────────────
+  console.log(`\n[4/4] Adding ${PLAYERS.length} players...`);
+  console.log('      This will take a few minutes. Watch the browser.\n');
 
   let added  = 0;
   let failed = 0;
+  let lastDetailId = null;
+
+  // Watch for player-add responses to capture the detail ID
+  page.on('response', async res => {
+    const url = res.url();
+    if (url.match(/ops\.rinknet\.com\/lists\/\d+\/details/) && res.request().method() === 'POST') {
+      try {
+        const json = await res.json();
+        if (json && json.id) lastDetailId = json.id;
+      } catch (_) {}
+    }
+  });
 
   for (const player of PLAYERS) {
     const label = `#${player.rank} ${player.first} ${player.last}`;
-    process.stdout.write(`  [${player.rank}/300] ${label} ... `);
+    process.stdout.write(`  [${String(player.rank).padStart(3)}/300] ${label.padEnd(35)} `);
 
     try {
-      // Click "Add Player" button
-      const addClicked = await tryClick(page, [
-        'button:has-text("Add Player")',
-        'button:has-text("Add")',
-        '[class*="add-player" i]',
-        '[class*="addPlayer" i]',
-        '[data-action="add-player"]',
-        '[aria-label*="add player" i]',
-        '[title*="add player" i]',
-      ], `add player for ${label}`);
+      // Make sure we're still on the list view page
+      if (!page.url().includes(`/lists/view/${listId}`) && !page.url().includes(`/lists/${listId}`)) {
+        await page.goto(`https://ops.rinknet.com/lists/view/${listId}`, { waitUntil: 'domcontentloaded' });
+        await sleep(1500);
+      }
 
-      if (!addClicked) {
-        console.log('SKIP (no Add button)');
-        failed++;
-        continue;
+      // Click Add Player button
+      let addBtn = null;
+      for (const sel of ['button:has-text("Add Player")', 'a:has-text("Add Player")', '[class*="add-player"]', 'button:has-text("Add")', 'a:has-text("Add")']) {
+        try {
+          const el = page.locator(sel).first();
+          if (await el.isVisible({ timeout: 1000 })) { addBtn = el; break; }
+        } catch (_) {}
+      }
+      if (!addBtn) { console.log('SKIP (no Add button)'); failed++; continue; }
+      await addBtn.click();
+      await sleep(DELAY_MS);
+
+      // Type in search box
+      let searchBox = null;
+      for (const sel of [
+        'input[placeholder*="search" i]', 'input[placeholder*="player" i]',
+        'input[placeholder*="name" i]', 'input[type="search"]',
+        'input[name="search"]', 'input[name="player"]',
+        '[role="searchbox"]', 'input:visible',
+      ]) {
+        try {
+          const el = page.locator(sel).first();
+          if (await el.isVisible({ timeout: 1000 })) { searchBox = el; break; }
+        } catch (_) {}
+      }
+      if (!searchBox) { console.log('SKIP (no search box)'); failed++; continue; }
+      await searchBox.fill(player.last);
+      await sleep(DELAY_MS * 1.5);
+
+      // Click first autocomplete / dropdown result
+      let resultClicked = false;
+      for (const sel of [
+        `[role="option"]:has-text("${player.last}")`,
+        `li:has-text("${player.last}"):has-text("${player.first}")`,
+        `li:has-text("${player.last}")`,
+        '[role="option"]',
+        '[class*="autocomplete"] li', '[class*="dropdown-item"]',
+        '[class*="suggestion"]', '[class*="result"] li',
+        '.pac-item', 'ul li:visible',
+      ]) {
+        try {
+          const el = page.locator(sel).first();
+          if (await el.isVisible({ timeout: 1500 })) {
+            await el.click();
+            resultClicked = true;
+            break;
+          }
+        } catch (_) {}
+      }
+      // If no autocomplete, try pressing Enter
+      if (!resultClicked) {
+        await searchBox.press('Enter');
+        await sleep(DELAY_MS);
+        // Try selecting from a results table
+        for (const sel of [
+          `tr:has-text("${player.last}"):has-text("${player.first}")`,
+          `tr:has-text("${player.last}")`,
+          `[class*="result"]:has-text("${player.last}")`,
+        ]) {
+          try {
+            const el = page.locator(sel).first();
+            if (await el.isVisible({ timeout: 1000 })) { await el.click(); resultClicked = true; break; }
+          } catch (_) {}
+        }
       }
 
       await sleep(DELAY_MS);
 
-      // Search for the player by last name then first name
-      const searchFilled = await tryFill(page, [
-        'input[placeholder*="search" i]',
-        'input[placeholder*="player" i]',
-        'input[placeholder*="name" i]',
-        'input[type="search"]',
-        'input[name="search"]',
-        'input[name="player"]',
-        '[class*="search" i] input',
-        '[class*="player-search" i] input',
-      ], player.last, `search for ${label}`);
-
-      if (!searchFilled) {
-        await tryClick(page, ['button:has-text("Cancel")', 'button:has-text("Close")', '[aria-label*="close" i]'], 'close dialog');
-        console.log('SKIP (no search field)');
-        failed++;
-        continue;
-      }
-
-      await sleep(DELAY_MS * 1.5);
-
-      // Look for the player in search results
-      const playerSelectors = [
-        `tr:has-text("${player.last}"):has-text("${player.first}")`,
-        `li:has-text("${player.last}"):has-text("${player.first}")`,
-        `[class*="result" i]:has-text("${player.last}")`,
-        `[class*="player" i]:has-text("${player.last}")`,
-        `td:has-text("${player.last}")`,
-      ];
-
-      let playerSelected = false;
-      for (const sel of playerSelectors) {
+      // Try to set ranking
+      for (const sel of ['input[name="ranking"]', 'input[name="rank"]', 'input[placeholder*="rank" i]', 'input[id*="rank" i]']) {
         try {
           const el = page.locator(sel).first();
-          if (await el.isVisible({ timeout: 2000 })) {
-            await el.click();
-            playerSelected = true;
+          if (await el.isVisible({ timeout: 500 })) {
+            await el.click({ clickCount: 3 });
+            await el.fill(String(player.rank));
             break;
           }
         } catch (_) {}
       }
 
-      if (!playerSelected) {
-        // Try clicking the first result
+      // Try to set star rating
+      const starStr = String(player.stars);
+      let ratingSet = false;
+      // Try numeric input
+      for (const sel of ['input[name="rating"]', 'input[name="stars"]', 'input[name="rating1"]', 'input[name="Rating1"]', 'input[placeholder*="rating" i]']) {
         try {
-          const firstResult = page.locator('[class*="result" i], [class*="option" i], tr[class*="player" i]').first();
-          if (await firstResult.isVisible({ timeout: 1500 })) {
-            await firstResult.click();
-            playerSelected = true;
+          const el = page.locator(sel).first();
+          if (await el.isVisible({ timeout: 500 })) {
+            await el.click({ clickCount: 3 });
+            await el.fill(starStr);
+            ratingSet = true;
+            break;
           }
+        } catch (_) {}
+      }
+      // Try select/dropdown
+      if (!ratingSet) {
+        try {
+          await page.selectOption('select[name="rating"], select[name="stars"], select[name="rating1"]', { value: starStr });
+          ratingSet = true;
+        } catch (_) {}
+      }
+      // Try clicking a star element with matching value
+      if (!ratingSet) {
+        try {
+          await page.locator(`[data-value="${starStr}"], [data-rating="${starStr}"], [title="${starStr}"]`).first().click({ timeout: 500 });
+          ratingSet = true;
+        } catch (_) {}
+      }
+
+      // Confirm / Save
+      for (const sel of ['button:has-text("Add")', 'button:has-text("Save")', 'button:has-text("OK")', 'button:has-text("Confirm")', 'button[type="submit"]:visible']) {
+        try {
+          const el = page.locator(sel).first();
+          if (await el.isVisible({ timeout: 500 })) { await el.click(); break; }
         } catch (_) {}
       }
 
       await sleep(DELAY_MS);
-
-      // Set the ranking
-      await tryFill(page, [
-        'input[name="ranking"]',
-        'input[name="rank"]',
-        'input[placeholder*="rank" i]',
-        'input[id*="rank" i]',
-      ], String(player.rank), `rank for ${label}`);
-
-      // Set the star rating — try a dropdown or select first
-      const starStr = String(player.stars);
-      const ratingSet = await tryFill(page, [
-        'input[name="rating"]',
-        'input[name="stars"]',
-        'input[name="rating1"]',
-        'input[name="Rating1"]',
-        'input[placeholder*="rating" i]',
-        'input[placeholder*="star" i]',
-      ], starStr, `star rating for ${label}`);
-
-      if (!ratingSet) {
-        // Try selecting from a dropdown
-        await tryClick(page, [
-          `select option[value="${starStr}"]`,
-          `[class*="rating" i] [value="${starStr}"]`,
-          `[class*="star" i][data-value="${starStr}"]`,
-        ], `star rating dropdown for ${label}`);
-      }
-
-      await sleep(DELAY_MS / 2);
-
-      // Confirm / Save this player
-      await tryClick(page, [
-        'button:has-text("Add")',
-        'button:has-text("Save")',
-        'button:has-text("OK")',
-        'button:has-text("Confirm")',
-        'button[type="submit"]:visible',
-      ], `confirm add for ${label}`);
-
-      await sleep(DELAY_MS);
-      console.log('✓');
+      console.log(`✓`);
       added++;
 
     } catch (err) {
-      console.log(`ERROR: ${err.message.split('\n')[0]}`);
+      console.log(`ERR: ${err.message.split('\n')[0].substring(0, 60)}`);
       failed++;
-      // Try to close any open dialog and continue
-      await tryClick(page, ['button:has-text("Cancel")', 'button:has-text("Close")', '[aria-label*="close" i]'], 'close on error');
+      // Close any open dialog
+      try { await page.keyboard.press('Escape'); } catch (_) {}
       await sleep(DELAY_MS);
     }
   }
 
-  // ── Summary ───────────────────────────────────────────────────────────────
-  await screenshot(page, '05-complete');
+  // ── Done ──────────────────────────────────────────────────────────────────
+  await saveScreenshot(page, '05-complete');
+  console.log('\n╔══════════════════════════════════════════╗');
+  console.log(`║  Done!  ✓ ${String(added).padEnd(3)} added   ✗ ${String(failed).padEnd(3)} failed       ║`);
+  console.log('╚══════════════════════════════════════════╝');
+  console.log(`\n  List URL: https://ops.rinknet.com/lists/view/${listId}`);
+  console.log('  Browser stays open — close it when you\'re done reviewing.\n');
 
-  console.log('\n╔═══════════════════════════════════════════╗');
-  console.log(`║  Done!  Added: ${String(added).padEnd(3)}  Failed: ${String(failed).padEnd(3)}  Total: 300  ║`);
-  console.log('╚═══════════════════════════════════════════╝');
+  // Save captured API info for debugging
+  const logFile = path.join(SCREENSHOTS_DIR, 'debug-info.json');
+  if (!fs.existsSync(SCREENSHOTS_DIR)) fs.mkdirSync(SCREENSHOTS_DIR, { recursive: true });
+  fs.writeFileSync(logFile, JSON.stringify({ listId, authToken: authToken ? '(captured)' : null, addPlayerBody }, null, 2));
 
-  if (capturedWrites.length > 0) {
-    const logFile = path.join(SCREENSHOTS_DIR, 'api-calls.json');
-    fs.writeFileSync(logFile, JSON.stringify(capturedWrites, null, 2));
-    console.log(`\n  API calls saved to: ${logFile}`);
-  }
-
-  console.log('\n  The browser will stay open so you can review the results.');
-  console.log('  Close the browser window when you are done.\n');
-
-  // Keep browser open for review
   await page.waitForTimeout(600000).catch(() => {});
   await browser.close();
 }
 
-// Wait for Enter key in terminal
 function waitForKeypress() {
   return new Promise(resolve => {
-    process.stdin.setRawMode(true);
+    if (process.stdin.isTTY) process.stdin.setRawMode(true);
     process.stdin.resume();
     process.stdin.once('data', () => {
-      process.stdin.setRawMode(false);
+      if (process.stdin.isTTY) process.stdin.setRawMode(false);
       process.stdin.pause();
       resolve();
+    });
+  });
+}
+
+function readLine() {
+  return new Promise(resolve => {
+    process.stdin.resume();
+    process.stdin.setEncoding('utf8');
+    process.stdin.once('data', data => {
+      process.stdin.pause();
+      resolve(data.trim());
     });
   });
 }

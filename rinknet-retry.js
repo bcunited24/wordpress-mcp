@@ -57,37 +57,38 @@ const PLAYERS = [
   { rank:259, last:'Bernier',        first:'Max',            stars:3.25 },
   { rank:274, last:'Boone',          first:'Liam',           stars:3.25 },
   // ── Not found in RinkNet on first run — retrying with fallback searches ─────
-  { rank:16,  last:'Guevin',         first:'Emile',          stars:4.25 },
-  { rank:29,  last:'Levy',           first:'Enzo',           stars:4.00 },
-  { rank:30,  last:'Blanchette',     first:'Alexy',          stars:4.00 },
-  { rank:38,  last:'Genereux',       first:'Mathieu',        stars:4.00 },
-  { rank:43,  last:'Guerard',        first:'Simon-Olivier',  stars:3.75 },
-  { rank:64,  last:'McGuire',        first:'Luke',           stars:3.75 },  // was McQuire
-  { rank:65,  last:'Duffy',          first:'Liam',           stars:3.75 },
-  { rank:69,  last:"O'Connell",      first:'Noah',           stars:3.75 },
-  { rank:80,  last:'Legare',         first:'Hugo',           stars:3.75 },
-  { rank:83,  last:'Theoret',        first:'Felix',          stars:3.75 },
-  { rank:131, last:'Sy Lam Pham',    first:'Florent',        stars:3.50 },
-  { rank:145, last:'DaPastena',      first:'Luca',           stars:3.50 },
-  { rank:150, last:'Gregoire',       first:'Benjamin',       stars:3.50 },
-  { rank:160, last:'Beck',           first:'Alexander',      stars:3.50 },
-  { rank:178, last:'Desjardins',     first:'Loik',           stars:3.25 },
-  { rank:179, last:'Hug',            first:'Dylan',          stars:3.25 },
-  { rank:194, last:'Lachapelle',     first:'William',        stars:3.25 },
-  { rank:197, last:'Souliere',       first:'Tommy',          stars:3.25 },
-  { rank:222, last:'Cote',           first:'Alexy',          stars:3.25 },
-  { rank:225, last:'Lanctot',        first:'Xavier',         stars:3.25 },
-  { rank:227, last:'Garneau',        first:'William',        stars:3.25 },
-  { rank:242, last:'Hanson-Leveille',first:'Dylan',          stars:3.25 },
-  { rank:253, last:'Dickinson',      first:'Rhys',           stars:3.25 },
-  { rank:256, last:'Vachon',         first:'Phillipe',       stars:3.25 },
-  { rank:257, last:'Dow-Imrie',      first:'Nolan',          stars:3.25 },
-  { rank:258, last:'Montminy',       first:'Samuel',         stars:3.25 },
-  { rank:273, last:'Morgan',         first:'Thomas',         stars:3.25 },
-  { rank:281, last:'Pelletier',      first:'Simon',          stars:3.25 },
-  { rank:284, last:'Gosselin',       first:'Max',            stars:3.25 },
-  { rank:291, last:'Quenville',      first:'Justin',         stars:3.25 },
-  { rank:299, last:'Giguere',        first:'Thomas',         stars:3.25 },
+  // Accented forms restored so buildSearchTerms tries both é/è and e versions
+  { rank:16,  last:'Guévin',         first:'Émile',         stars:4.25 },  // Guévin, Émile
+  { rank:29,  last:'Levy',                first:'Enzo',               stars:4.00 },
+  { rank:30,  last:'Blanchette',          first:'Alexy',              stars:4.00 },
+  { rank:38,  last:'Généreux', first:'Mathieu',            stars:4.00 },  // Généreux
+  { rank:43,  last:'Guérard',        first:'Simon-Olivier',      stars:3.75 },  // Guérard
+  { rank:64,  last:'McGuire',             first:'Luke',               stars:3.75 },  // was McQuire
+  { rank:65,  last:'Duffy',               first:'Liam',               stars:3.75 },
+  { rank:69,  last:"O’Connell",      first:'Noah',               stars:3.75 },  // O'Connell
+  { rank:80,  last:'Légaré',   first:'Hugo',               stars:3.75 },  // Légaré
+  { rank:83,  last:'Théorêt',  first:'Félix',         stars:3.75 },  // Théorêt, Félix
+  { rank:131, last:'Sy Lam Pham',         first:'Florent',            stars:3.50 },
+  { rank:145, last:'DaPastena',           first:'Luca',               stars:3.50 },
+  { rank:150, last:'Grégoire',       first:'Benjamin',           stars:3.50 },  // Grégoire
+  { rank:160, last:'Beck',                first:'Alexander',          stars:3.50 },
+  { rank:178, last:'Desjardins',          first:'Loïk',          stars:3.25 },  // Loïk
+  { rank:179, last:'Hug',                 first:'Dylan',              stars:3.25 },
+  { rank:194, last:'Lachapelle',          first:'William',            stars:3.25 },
+  { rank:197, last:'Soulière',       first:'Tommy',              stars:3.25 },  // Soulière
+  { rank:222, last:'Côté',     first:'Alexy',              stars:3.25 },  // Côté
+  { rank:225, last:'Lanctôt',        first:'Xavier',             stars:3.25 },  // Lanctôt
+  { rank:227, last:'Garneau',             first:'William',            stars:3.25 },
+  { rank:242, last:'Hanson-Leveillé', first:'Dylan',            stars:3.25 },  // Leveillé (also tries Hanson)
+  { rank:253, last:'Dickinson',           first:'Rhys',               stars:3.25 },
+  { rank:256, last:'Vachon',              first:'Phillipe',           stars:3.25 },
+  { rank:257, last:'Dow-Imrie',           first:'Nolan',              stars:3.25 },
+  { rank:258, last:'Montminy',            first:'Samuel',             stars:3.25 },
+  { rank:273, last:'Morgan',              first:'Thomas',             stars:3.25 },
+  { rank:281, last:'Pelletier',           first:'Simon',              stars:3.25 },
+  { rank:284, last:'Gosselin',            first:'Max',                stars:3.25 },
+  { rank:291, last:'Quenville',           first:'Justin',             stars:3.25 },
+  { rank:299, last:'Giguère',        first:'Thomas',             stars:3.25 },  // Giguère
 ];
 
 // ── HELPERS ───────────────────────────────────────────────────────────────────
@@ -100,30 +101,36 @@ function saveScreenshot(page, name) {
   return page.screenshot({ path: file, fullPage: false }).catch(() => {});
 }
 
+// RegExp built from code points so the source file never contains raw combining chars
+const COMBINING_MARKS = new RegExp('[\u0300-\u036f]', 'g');
 function stripAccents(str) {
-  return str.normalize('NFD').replace(/[̀-ͯ]/g, '');
+  return str.normalize('NFD').replace(COMBINING_MARKS, '');
 }
 
 // Build a list of search strings to try, from most specific to most forgiving.
 function buildSearchTerms(player) {
-  const prefix = stripAccents(player.first.substring(0, 2));
-  const last   = player.last;
+  const prefix      = stripAccents(player.first.substring(0, 2));
+  const last        = player.last;
+  const lastStripped = stripAccents(last);
 
   const terms = new Set();
 
-  // Primary: "Pr Lastname"
-  terms.add(`${prefix} ${stripAccents(last)}`);
+  // Primary: "Pr Lastname" (accents stripped)
+  terms.add(`${prefix} ${lastStripped}`);
+
+  // Also try with accents intact — RinkNet search may be accent-sensitive
+  terms.add(`${prefix} ${last}`);
 
   // Strip apostrophes: O'Connell → OConnell, D'Elia → DElia
-  const noApostrophe = stripAccents(last.replace(/'/g, ''));
+  const noApostrophe = stripAccents(last.replace(/['’]/g, ''));
   terms.add(`${prefix} ${noApostrophe}`);
 
-  // Hyphenated / space-separated — try first segment: Hanson-Leveille → Hanson, De Franco → De
-  const firstSeg = stripAccents(last.split(/[-\s]/)[0]);
+  // Hyphenated / space-separated — try first segment: Hanson-Leveille → Hanson
+  const segs     = last.split(/[-\s]/);
+  const firstSeg = stripAccents(segs[0]);
   terms.add(`${prefix} ${firstSeg}`);
 
   // Last segment: Sy Lam Pham → Pham, Hanson-Leveille → Leveille
-  const segs = last.split(/[-\s]/);
   const lastSeg = stripAccents(segs[segs.length - 1]);
   terms.add(`${prefix} ${lastSeg}`);
 
@@ -133,7 +140,8 @@ function buildSearchTerms(player) {
   }
 
   // Bare last name only (no prefix) — last resort
-  terms.add(stripAccents(last));
+  terms.add(lastStripped);
+  terms.add(last);
 
   return [...terms];
 }

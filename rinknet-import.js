@@ -434,7 +434,7 @@ async function main() {
 
   // ── STEP 2: Navigate to Lists and create new list ─────────────────────────
   console.log('\n[2/4] Creating list...');
-  await page.goto('https://ops.rinknet.com/lists/create', { waitUntil: 'domcontentloaded' });
+  await page.goto('https://ops.rinknet.com/#/lists/create', { waitUntil: 'domcontentloaded' });
   await sleep(2000);
   await saveScreenshot(page, '02-create-form');
 
@@ -502,7 +502,7 @@ async function main() {
 
   // ── STEP 3: Navigate to the list view page ────────────────────────────────
   console.log('\n[3/4] Navigating to list view...');
-  await page.goto(`https://ops.rinknet.com/lists/view/${listId}`, { waitUntil: 'domcontentloaded' });
+  await page.goto(`https://ops.rinknet.com/#/lists/view/${listId}`, { waitUntil: 'domcontentloaded' });
   await sleep(2000);
   await saveScreenshot(page, '04-list-view');
   console.log('  ✓ On list view page');
@@ -532,8 +532,8 @@ async function main() {
 
     try {
       // Make sure we're still on the list view page
-      if (!page.url().includes(`/lists/view/${listId}`) && !page.url().includes(`/lists/${listId}`)) {
-        await page.goto(`https://ops.rinknet.com/lists/view/${listId}`, { waitUntil: 'domcontentloaded' });
+      if (!page.url().includes(`/lists/view/${listId}`) && !page.url().includes(`/lists/${listId}`) && !page.url().includes(`#/lists/view/${listId}`)) {
+        await page.goto(`https://ops.rinknet.com/#/lists/view/${listId}`, { waitUntil: 'domcontentloaded' });
         await sleep(1500);
       }
 
@@ -673,7 +673,7 @@ async function main() {
   console.log('\n╔══════════════════════════════════════════╗');
   console.log(`║  Done!  ✓ ${String(added).padEnd(3)} added   ✗ ${String(failed).padEnd(3)} failed       ║`);
   console.log('╚══════════════════════════════════════════╝');
-  console.log(`\n  List URL: https://ops.rinknet.com/lists/view/${listId}`);
+  console.log(`\n  List URL: https://ops.rinknet.com/#/lists/view/${listId}`);
   console.log('  Browser stays open — close it when you\'re done reviewing.\n');
 
   // Save captured API info for debugging

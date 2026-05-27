@@ -588,6 +588,9 @@ async function main() {
     process.stdout.write(`  [${String(player.rank).padStart(3)}/300] ${label.padEnd(35)} `);
 
     try {
+      // Dismiss any stale error popup before starting this player
+      await dismissErrorPopup(page);
+
       // ── Step 1: Make sure we're on the list view page ──────────────────────
       const curUrl = page.url();
       if (!curUrl.includes(`/home/lists/view/${listId}`)) {
@@ -626,10 +629,18 @@ async function main() {
       try {
         await page.waitForSelector('text=Search by Player', { timeout: 10000 });
       } catch (_) {
-        await saveScreenshot(page, `modal-not-found-${player.rank}`);
-        console.log(`SKIP (modal did not open) url=${page.url().slice(-40)}`);
-        failed++;
-        continue;
+        // Maybe an error popup blocked the modal from opening — dismiss it and retry once
+        const hadError = await dismissErrorPopup(page);
+        if (hadError) {
+          await page.locator('button:has-text("Add Player"), a:has-text("Add Player")').first().click().catch(() => {});
+          await page.waitForSelector('text=Search by Player', { timeout: 8000 }).catch(() => {});
+        }
+        if (!await page.locator('text=Search by Player').isVisible().catch(() => false)) {
+          await saveScreenshot(page, `modal-not-found-${player.rank}`);
+          console.log(`SKIP (modal did not open) url=${page.url().slice(-40)}`);
+          failed++;
+          continue;
+        }
       }
       await sleep(500);
 
@@ -656,8 +667,8 @@ async function main() {
         continue;
       }
 
-      // Search: first initial + last name, e.g. "J McKinnon" or "T Boisvert"
-      const searchTerm = `${player.first.charAt(0)} ${player.last}`;
+      // Search: first initial + last name, stripping accents (e.g. "G Gregoire" not "G Grégoire")
+      const searchTerm = stripAccents(`${player.first.charAt(0)} ${player.last}`);
       await searchInput.click();
       await searchInput.fill(searchTerm);
       await sleep(2500); // wait for auto-search results to load
@@ -800,6 +811,7 @@ async function main() {
     } catch (err) {
       console.log(`ERR: ${err.message.split('\n')[0].substring(0, 60)}`);
       failed++;
+      await dismissErrorPopup(page);
       try { await page.keyboard.press('Escape'); } catch (_) {}
       await sleep(2000);
     }
@@ -820,6 +832,38 @@ async function main() {
 
   await page.waitForTimeout(600000).catch(() => {});
   await browser.close();
+}
+
+// Dismiss the "Something has gone wrong" error popup if it appears
+async function dismissErrorPopup(page) {
+  try {
+    const errEl = page.locator('text=Something has gone wrong');
+    if (!await errEl.isVisible({ timeout: 300 }).catch(() => false)) return false;
+    // Try common close button labels
+    for (const sel of [
+      'button:has-text("Close")', 'button:has-text("OK")',
+      'button:has-text("Dismiss")', 'button:has-text("close")',
+      '[aria-label="Close"]', '[aria-label="close"]',
+      'mat-dialog-actions button', '.mat-dialog-actions button',
+    ]) {
+      const btn = page.locator(sel).first();
+      if (await btn.isVisible({ timeout: 300 }).catch(() => false)) {
+        await btn.click();
+        process.stdout.write('\n  ⚠ dismissed RinkNet error popup ');
+        await sleep(500);
+        return true;
+      }
+    }
+    await page.keyboard.press('Escape');
+    process.stdout.write('\n  ⚠ dismissed RinkNet error popup (Escape) ');
+    await sleep(500);
+    return true;
+  } catch (_) { return false; }
+}
+
+// Remove accent/diacritic marks so "Grégoire" → "Gregoire"
+function stripAccents(str) {
+  return str.normalize('NFD').replace(/[̀-ͯ]/g, '');
 }
 
 function waitForKeypress() {

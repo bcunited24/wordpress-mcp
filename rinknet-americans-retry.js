@@ -53,9 +53,10 @@ function stripAccents(str) {
   return str.normalize('NFD').replace(COMBINING_MARKS, '');
 }
 
-// Uses first 4 chars of first name for a more specific search
+// Uses first 3 chars of first name (or full name if shorter, e.g. RJ, TJ, AJ).
+// Never falls back to last name only — that causes wrong-player matches.
 function buildSearchTerms(player) {
-  const raw    = player.first.substring(0, 4);
+  const raw    = player.first.substring(0, 3);
   const prefix = stripAccents(raw);
   const last   = player.last;
   const terms  = new Set();
@@ -69,7 +70,6 @@ function buildSearchTerms(player) {
   terms.add(`${prefix} ${stripAccents(segs[segs.length - 1])}`);
   if (segs.length >= 3) terms.add(`${prefix} ${stripAccents(segs[1])}`);
 
-  terms.add(stripAccents(last));
   return [...terms];
 }
 

@@ -97,7 +97,7 @@ async function closeModal(page) {
   await page.keyboard.press('Escape').catch(() => {});
   await sleep(600);
   // If dialog still visible, try clicking outside it
-  const stillOpen = await page.locator('md-dialog-container').isVisible({ timeout: 500 }).catch(() => false);
+  const stillOpen = await page.locator('.md-dialog-container').isVisible({ timeout: 500 }).catch(() => false);
   if (stillOpen) {
     await page.mouse.click(10, 10).catch(() => {});
     await sleep(500);
@@ -109,7 +109,7 @@ async function waitForConfirmEnabled(page, ms) {
   const deadline = Date.now() + ms;
   while (Date.now() < deadline) {
     // Only look inside md-dialog-container — never the trigger button behind it
-    const btns = page.locator('md-dialog-container button:has-text("Add Player"), md-dialog-container button:has-text("ADD PLAYER")');
+    const btns = page.locator('.md-dialog-container button:has-text("Add Player"), .md-dialog-container button:has-text("ADD PLAYER")');
     const count = await btns.count().catch(() => 0);
     for (let i = count - 1; i >= 0; i--) {
       const vis      = await btns.nth(i).isVisible({ timeout: 200 }).catch(() => false);
@@ -190,7 +190,7 @@ async function main() {
 
       // ── Step 1: Ensure modal is closed and we're on the list view ──────
       // Close any modal left open by a previous failure before doing anything
-      const modalOpen = await page.locator('md-dialog-container').isVisible({ timeout: 500 }).catch(() => false);
+      const modalOpen = await page.locator('.md-dialog-container').isVisible({ timeout: 500 }).catch(() => false);
       if (modalOpen) {
         console.log(`  → Closing leftover modal…`);
         await closeModal(page);
@@ -284,7 +284,7 @@ async function main() {
 
         // Only count rows INSIDE the modal — the main list table also has
         // hundreds of tr elements which would give a false "found" reading.
-        rowCount = await page.locator('md-dialog-container table tbody tr').count().catch(() => 0);
+        rowCount = await page.locator('.md-dialog-container table tbody tr').count().catch(() => 0);
         if (rowCount > 0) {
           console.log(`  ✓ ${rowCount} row(s) found`);
           break;
@@ -307,13 +307,13 @@ async function main() {
       const baseName         = stripAccents(player.last.split(/[-'\s]/)[0]);
       const baseNameAccented = player.last.split(/[-'\s]/)[0];
       const rowTried = [
-        `md-dialog-container tr:has-text("${baseNameAccented}"):has-text("/2010")`,
-        `md-dialog-container tr:has-text("${baseName}"):has-text("/2010")`,
-        `md-dialog-container tr:has-text("${baseNameAccented}"):has-text("/2009")`,
-        `md-dialog-container tr:has-text("${baseName}"):has-text("/2009")`,
-        `md-dialog-container tr:has-text("${baseNameAccented}")`,
-        `md-dialog-container tr:has-text("${baseName}")`,
-        'md-dialog-container table tbody tr:first-child',
+        `.md-dialog-container tr:has-text("${baseNameAccented}"):has-text("/2010")`,
+        `.md-dialog-container tr:has-text("${baseName}"):has-text("/2010")`,
+        `.md-dialog-container tr:has-text("${baseNameAccented}"):has-text("/2009")`,
+        `.md-dialog-container tr:has-text("${baseName}"):has-text("/2009")`,
+        `.md-dialog-container tr:has-text("${baseNameAccented}")`,
+        `.md-dialog-container tr:has-text("${baseName}")`,
+        '.md-dialog-container table tbody tr:first-child',
       ];
       let rowClicked = false;
       for (const sel of rowTried) {
@@ -329,7 +329,7 @@ async function main() {
       }
       if (!rowClicked) {
         // Last resort: click whatever is in the table
-        await page.locator('md-dialog-container table tbody tr').first().click().catch(() => {});
+        await page.locator('.md-dialog-container table tbody tr').first().click().catch(() => {});
         console.log(`  ✓ Row clicked (modal first row fallback)`);
       }
 

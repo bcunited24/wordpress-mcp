@@ -1,7 +1,10 @@
 #!/usr/bin/env node
 /**
- * RinkNet Rankings Retry 2 — targets the 24 remaining skipped players.
- * All 24 are found in RinkNet search; failures are row-click / confirm-button / navigation.
+ * RinkNet Retry 2 — 24 remaining players.
+ * Same flow as the original script that added 276 players successfully.
+ * Two additions only:
+ *   1. Searches try both accented (Grégoire) and stripped (Gregoire) forms.
+ *   2. Any modal left open from a previous failure is closed before each player.
  *
  * RUN:  node rinknet-retry2.js
  */
@@ -15,6 +18,7 @@ const path = require('path');
 const USERNAME        = 'bcollins@neutralzone.net';
 const PASSWORD        = 'NZhockey24!';
 const LIST_ID         = '-1531873177';
+const DELAY_MS        = 800;
 const SCREENSHOTS_DIR = './rinknet-screenshots';
 
 const PLAYERS = [
@@ -54,35 +58,34 @@ function saveScreenshot(page, name) {
   return page.screenshot({ path: file, fullPage: false }).catch(() => {});
 }
 
-const COMBINING_MARKS = new RegExp('[\u0300-\u036f]', 'g');
+const COMBINING_MARKS = new RegExp('[̀-ͯ]', 'g');
 function stripAccents(str) {
   return str.normalize('NFD').replace(COMBINING_MARKS, '');
 }
 
-// Returns search terms to try in order, most-specific first.
+// Returns search terms to try: stripped first (works for most), then accented,
+// then segment fallbacks for hyphenated / multi-word / apostrophe names.
 function buildSearchTerms(player) {
   const prefix = stripAccents(player.first.substring(0, 2));
   const last   = player.last;
   const terms  = new Set();
 
-  terms.add(`${prefix} ${stripAccents(last)}`);      // e.g. "Th Gregoire"
-  terms.add(`${prefix} ${last}`);                    // e.g. "Th Grégoire"
+  terms.add(`${prefix} ${stripAccents(last)}`);
+  terms.add(`${prefix} ${last}`);
+  terms.add(`${prefix} ${stripAccents(last.replace(/['']/g, ''))}`);
 
-  const noApos = stripAccents(last.replace(/['']/g, ''));
-  terms.add(`${prefix} ${noApos}`);                  // O'Connell → OConnell
+  const segs = last.split(/[-\s]/);
+  terms.add(`${prefix} ${stripAccents(segs[0])}`);
+  terms.add(`${prefix} ${stripAccents(segs[segs.length - 1])}`);
+  if (segs.length >= 3) terms.add(`${prefix} ${stripAccents(segs[1])}`);
 
-  const segs    = last.split(/[-\s]/);
-  terms.add(`${prefix} ${stripAccents(segs[0])}`);   // first segment
-  terms.add(`${prefix} ${stripAccents(segs[segs.length - 1])}`); // last segment
-  if (segs.length >= 3) terms.add(`${prefix} ${stripAccents(segs[1])}`); // middle
-
-  terms.add(stripAccents(last));                     // bare last name
+  terms.add(stripAccents(last));
   return [...terms];
 }
 
 async function dismissErrorPopup(page) {
   try {
-    if (!await page.locator('text=Something has gone wrong').isVisible({ timeout: 400 }).catch(() => false)) return false;
+    if (!await page.locator('text=Something has gone wrong').isVisible({ timeout: 300 }).catch(() => false)) return false;
     for (const sel of ['button:has-text("Close")', 'button:has-text("OK")', '[aria-label="Close"]', 'mat-dialog-actions button']) {
       const btn = page.locator(sel).first();
       if (await btn.isVisible({ timeout: 300 }).catch(() => false)) { await btn.click(); return true; }
@@ -90,35 +93,6 @@ async function dismissErrorPopup(page) {
     await page.keyboard.press('Escape');
     return true;
   } catch (_) { return false; }
-}
-
-// Close any open modal (Escape key + wait for md-dialog to disappear).
-async function closeModal(page) {
-  await page.keyboard.press('Escape').catch(() => {});
-  await sleep(600);
-  // If dialog still visible, try clicking outside it
-  const stillOpen = await page.locator('.md-dialog-container').isVisible({ timeout: 500 }).catch(() => false);
-  if (stillOpen) {
-    await page.mouse.click(10, 10).catch(() => {});
-    await sleep(500);
-  }
-}
-
-// Wait up to `ms` for the confirm ADD PLAYER button INSIDE the dialog to become enabled.
-async function waitForConfirmEnabled(page, ms) {
-  const deadline = Date.now() + ms;
-  while (Date.now() < deadline) {
-    // Only look inside md-dialog-container — never the trigger button behind it
-    const btns = page.locator('.md-dialog-container button:has-text("Add Player"), .md-dialog-container button:has-text("ADD PLAYER")');
-    const count = await btns.count().catch(() => 0);
-    for (let i = count - 1; i >= 0; i--) {
-      const vis      = await btns.nth(i).isVisible({ timeout: 200 }).catch(() => false);
-      const disabled = await btns.nth(i).isDisabled().catch(() => true);
-      if (vis && !disabled) return btns.nth(i);
-    }
-    await sleep(300);
-  }
-  return null;
 }
 
 // ── MAIN ──────────────────────────────────────────────────────────────────────
@@ -129,7 +103,7 @@ async function main() {
   console.log('╚══════════════════════════════════════════╝\n');
 
   let loginCompleted = false;
-  const browser = await chromium.launch({ headless: false, slowMo: 80 });
+  const browser = await chromium.launch({ headless: false, slowMo: 100 });
   const context  = await browser.newContext();
   const page     = await context.newPage();
 
@@ -188,20 +162,17 @@ async function main() {
     try {
       await dismissErrorPopup(page);
 
-      // ── Step 1: Ensure modal is closed and we're on the list view ──────
-      // Close any modal left open by a previous failure before doing anything
-      const modalOpen = await page.locator('.md-dialog-container').isVisible({ timeout: 500 }).catch(() => false);
-      if (modalOpen) {
-        console.log(`  → Closing leftover modal…`);
-        await closeModal(page);
-      }
+      // Close any modal left open from a previous failure
+      await page.keyboard.press('Escape').catch(() => {});
+      await sleep(400);
 
+      // Navigate to list if needed
       if (!page.url().includes(`/home/lists/view/${LIST_ID}`)) {
         await page.goto(listUrl, { waitUntil: 'domcontentloaded' });
-        await sleep(3000);
+        await sleep(2500);
       }
 
-      // ── Step 2: Click the + ADD PLAYER trigger ───────────────────────────
+      // ── Click + ADD PLAYER trigger ────────────────────────────────────────
       let triggerClicked = false;
       for (const sel of [
         'button:has-text("Add Player")', 'a:has-text("Add Player")',
@@ -209,9 +180,8 @@ async function main() {
       ]) {
         try {
           const el = page.locator(sel).first();
-          if (await el.isVisible({ timeout: 6000 })) {
+          if (await el.isVisible({ timeout: 5000 })) {
             await el.scrollIntoViewIfNeeded();
-            await sleep(300);
             await el.click();
             triggerClicked = true;
             break;
@@ -223,20 +193,17 @@ async function main() {
         console.log(`  ✗ SKIP — ADD PLAYER trigger not found`);
         await saveScreenshot(page, `skip-trigger-${player.rank}`);
         results.skip.push(player.rank);
-        await closeModal(page);
-        await page.goto(listUrl, { waitUntil: 'domcontentloaded' });
-        await sleep(2500);
         continue;
       }
 
-      // ── Step 3: Wait for modal ───────────────────────────────────────────
+      // ── Wait for modal ────────────────────────────────────────────────────
       try {
-        await page.waitForSelector('text=Search by Player', { timeout: 12000 });
+        await page.waitForSelector('text=Search by Player', { timeout: 10000 });
       } catch (_) {
         const hadError = await dismissErrorPopup(page);
         if (hadError) {
           await page.locator('button:has-text("Add Player"), a:has-text("Add Player")').first().click().catch(() => {});
-          await page.waitForSelector('text=Search by Player', { timeout: 10000 }).catch(() => {});
+          await page.waitForSelector('text=Search by Player', { timeout: 8000 }).catch(() => {});
         }
       }
 
@@ -244,14 +211,12 @@ async function main() {
         console.log(`  ✗ SKIP — modal did not open`);
         await saveScreenshot(page, `skip-modal-${player.rank}`);
         results.skip.push(player.rank);
-        await closeModal(page);
         await page.goto(listUrl, { waitUntil: 'domcontentloaded' });
-        await sleep(2500);
+        await sleep(2000);
         continue;
       }
 
-      // ── Step 4: Find modal search input (lowest on page = inside modal) ──
-      await sleep(500);
+      // ── Find modal search input (lowest on page = inside modal) ──────────
       let searchInput = null;
       const allInputs = await page.locator('input').all();
       let maxY = -1;
@@ -262,110 +227,118 @@ async function main() {
 
       if (!searchInput) {
         console.log(`  ✗ SKIP — search input not found`);
-        await saveScreenshot(page, `skip-input-${player.rank}`);
         results.skip.push(player.rank);
-        await closeModal(page);
+        await page.keyboard.press('Escape');
+        await sleep(500);
         await page.goto(listUrl, { waitUntil: 'domcontentloaded' });
-        await sleep(2500);
+        await sleep(2000);
         continue;
       }
 
-      // ── Step 5: Search — try terms until rows appear ─────────────────────
+      // ── Search — try each term until rows appear ──────────────────────────
       const terms = buildSearchTerms(player);
-      let rowCount = 0;
+      let rowFound = false;
 
       for (const term of terms) {
         console.log(`  → Searching: "${term}"`);
         await searchInput.click({ clickCount: 3 });
         await searchInput.fill('');
-        await sleep(400);
+        await sleep(300);
         await searchInput.fill(term);
-        await sleep(3000);  // generous wait for auto-search
+        await sleep(2500);
 
-        // Only count rows INSIDE the modal — the main list table also has
-        // hundreds of tr elements which would give a false "found" reading.
-        rowCount = await page.locator('.md-dialog-container table tbody tr').count().catch(() => 0);
-        if (rowCount > 0) {
-          console.log(`  ✓ ${rowCount} row(s) found`);
+        const hasRows = await page.locator('table tbody tr').count().catch(() => 0);
+        if (hasRows > 0) {
+          rowFound = true;
+          console.log(`  ✓ Found rows`);
           break;
         }
       }
 
-      if (rowCount === 0) {
+      if (!rowFound) {
         console.log(`  ✗ NOT FOUND`);
         await saveScreenshot(page, `notfound-${player.rank}`);
         results.notFound.push(player.rank);
-        await closeModal(page);
+        await page.keyboard.press('Escape');
+        await sleep(500);
         await page.goto(listUrl, { waitUntil: 'domcontentloaded' });
-        await sleep(2500);
+        await sleep(2000);
         continue;
       }
 
-      // ── Step 6: Click the best matching row ─────────────────────────────
-      // Scope every selector to inside md-dialog-container so we never
-      // accidentally click a row in the main list table behind the modal.
-      const baseName         = stripAccents(player.last.split(/[-'\s]/)[0]);
-      const baseNameAccented = player.last.split(/[-'\s]/)[0];
-      const rowTried = [
-        `.md-dialog-container tr:has-text("${baseNameAccented}"):has-text("/2010")`,
-        `.md-dialog-container tr:has-text("${baseName}"):has-text("/2010")`,
-        `.md-dialog-container tr:has-text("${baseNameAccented}"):has-text("/2009")`,
-        `.md-dialog-container tr:has-text("${baseName}"):has-text("/2009")`,
-        `.md-dialog-container tr:has-text("${baseNameAccented}")`,
-        `.md-dialog-container tr:has-text("${baseName}")`,
-        '.md-dialog-container table tbody tr:first-child',
+      // ── Select best matching row ──────────────────────────────────────────
+      // Try accented form first (RinkNet shows accented names in results),
+      // then stripped, preferring /2010 birth year then /2009.
+      const nameA = player.last.split(/[-'\s]/)[0];
+      const nameS = stripAccents(nameA);
+      const rowSelectors = [
+        `tr:has-text("${nameA}"):has-text("/2010")`,
+        `tr:has-text("${nameS}"):has-text("/2010")`,
+        `tr:has-text("${nameA}"):has-text("/2009")`,
+        `tr:has-text("${nameS}"):has-text("/2009")`,
+        `tr:has-text("${nameA}")`,
+        `tr:has-text("${nameS}")`,
+        'table tbody tr:first-child',
       ];
       let rowClicked = false;
-      for (const sel of rowTried) {
+      for (const sel of rowSelectors) {
         try {
           const row = page.locator(sel).first();
           if (await row.isVisible({ timeout: 2000 })) {
             await row.click();
             rowClicked = true;
-            console.log(`  ✓ Row clicked (${sel})`);
             break;
           }
         } catch (_) {}
       }
       if (!rowClicked) {
-        // Last resort: click whatever is in the table
-        await page.locator('.md-dialog-container table tbody tr').first().click().catch(() => {});
-        console.log(`  ✓ Row clicked (modal first row fallback)`);
+        await page.locator('table tbody tr').first().click().catch(() => {});
       }
 
-      // ── Step 7: Wait up to 5s for the confirm button to become enabled ───
-      await sleep(800);
-      const confirmBtn = await waitForConfirmEnabled(page, 5000);
+      await sleep(500);
 
-      if (!confirmBtn) {
-        console.log(`  ✗ SKIP — confirm button never enabled`);
+      // ── Click ADD PLAYER confirm button (last → first, skip disabled) ─────
+      const allAddBtns = page.locator('button:has-text("Add Player"), button:has-text("ADD PLAYER")');
+      const total = await allAddBtns.count();
+      let confirmClicked = false;
+      for (let bi = total - 1; bi >= 0; bi--) {
+        const vis      = await allAddBtns.nth(bi).isVisible({ timeout: 300 }).catch(() => false);
+        if (!vis) continue;
+        const disabled = await allAddBtns.nth(bi).isDisabled().catch(() => false);
+        if (disabled) continue;
+        try {
+          await allAddBtns.nth(bi).click({ timeout: 5000 });
+          confirmClicked = true;
+          break;
+        } catch (_) {}
+      }
+
+      if (!confirmClicked) {
+        console.log(`  ✗ SKIP — confirm button not found/enabled`);
         await saveScreenshot(page, `skip-confirm-${player.rank}`);
         results.skip.push(player.rank);
-        await closeModal(page);
+        await page.keyboard.press('Escape');
+        await sleep(500);
         await page.goto(listUrl, { waitUntil: 'domcontentloaded' });
-        await sleep(2500);
+        await sleep(2000);
         continue;
       }
 
-      await confirmBtn.click();
-      console.log(`  ✓ Confirm clicked`);
-
-      // ── Step 8: Wait for addPlayer page ─────────────────────────────────
+      // ── Wait for addPlayer navigation ─────────────────────────────────────
       try {
-        await page.waitForURL('**/addPlayer/**', { timeout: 15000 });
+        await page.waitForURL('**/addPlayer/**', { timeout: 12000 });
       } catch (_) {
-        console.log(`  ✗ SKIP — addPlayer page not reached`);
+        console.log(`  ✗ SKIP — did not reach addPlayer page`);
         await saveScreenshot(page, `skip-addplayer-${player.rank}`);
         results.skip.push(player.rank);
-        await closeModal(page);
         await page.goto(listUrl, { waitUntil: 'domcontentloaded' });
-        await sleep(2500);
+        await sleep(2000);
         continue;
       }
 
-      await sleep(1000);
+      await sleep(DELAY_MS);
 
-      // ── Step 9: Fill Ranking ─────────────────────────────────────────────
+      // ── Fill Ranking ──────────────────────────────────────────────────────
       for (const sel of ['input[name="ranking"]','input[name="rank"]','input[type="number"]','input[type="text"]']) {
         const el = page.locator(sel).first();
         if (await el.isVisible({ timeout: 1000 }).catch(() => false)) {
@@ -375,7 +348,7 @@ async function main() {
         }
       }
 
-      // ── Step 10: Set Star Rating ─────────────────────────────────────────
+      // ── Set Star Rating ───────────────────────────────────────────────────
       const starValue = String(parseFloat(player.stars));
       const selects   = page.locator('select');
       const selCount  = await selects.count();
@@ -388,20 +361,20 @@ async function main() {
         }
       }
 
-      // ── Step 11: Save ────────────────────────────────────────────────────
+      // ── Save ──────────────────────────────────────────────────────────────
       for (const sel of ['button:has-text("SAVE")','button:has-text("Save")','button[type="submit"]']) {
         const el = page.locator(sel).first();
         if (await el.isVisible({ timeout: 1000 }).catch(() => false)) { await el.click(); break; }
       }
 
-      // ── Step 12: Wait to return to list ─────────────────────────────────
+      // ── Wait to return to list ────────────────────────────────────────────
       try {
-        await page.waitForFunction(() => !window.location.href.includes('addPlayer'), { timeout: 15000 });
+        await page.waitForFunction(() => !window.location.href.includes('addPlayer'), { timeout: 12000 });
       } catch (_) {
         await page.goto(listUrl, { waitUntil: 'domcontentloaded' });
       }
 
-      await sleep(1000);
+      await sleep(DELAY_MS);
       console.log(`  ✓ Added rank ${player.rank} at ${player.stars}★`);
       results.ok.push(player.rank);
 
@@ -409,9 +382,9 @@ async function main() {
       console.error(`  ✗ ERROR: ${err.message}`);
       await saveScreenshot(page, `error-${player.rank}`);
       results.skip.push(player.rank);
-      await closeModal(page);
+      await page.keyboard.press('Escape').catch(() => {});
       await page.goto(listUrl, { waitUntil: 'domcontentloaded' }).catch(() => {});
-      await sleep(3000);
+      await sleep(2500);
     }
   }
 

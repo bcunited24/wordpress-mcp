@@ -640,7 +640,7 @@ async function main() {
         }
       }
 
-      // Set Star Rating — find the rating select by its decimal options, handle missing values
+      // Set Star Rating — dropdown has: 4.75, 4.5, 4.25, 4, 3.75
       const starValue = String(parseFloat(player.stars));
       const selects   = page.locator('select');
       const selCount  = await selects.count();
@@ -649,17 +649,7 @@ async function main() {
         if (!await sel.isVisible({ timeout: 500 }).catch(() => false)) continue;
         const opts = await sel.locator('option').allTextContents();
         if (!opts.some(o => /^\d(\.\d+)?$/.test(o.trim()))) continue;
-
-        const available = opts.map(o => o.trim()).filter(o => /^\d(\.\d+)?$/.test(o));
-        let target = starValue;
-        if (!available.includes(target)) {
-          // pick the highest available value <= requested
-          const nums   = available.map(Number).sort((a, b) => b - a);
-          const req    = parseFloat(player.stars);
-          const closest = nums.find(n => n <= req) || nums[nums.length - 1];
-          target = String(closest);
-        }
-        await sel.selectOption(target).catch(() => {});
+        await sel.selectOption(starValue).catch(() => {});
         break;
       }
 

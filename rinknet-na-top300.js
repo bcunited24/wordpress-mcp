@@ -338,6 +338,47 @@ function stripAccents(str) {
   return str.normalize('NFD').replace(COMBINING_MARKS, '');
 }
 
+const NICKNAME_MAP = {
+  'joey':      'joseph',
+  'jake':      'jacob',
+  'drew':      'andrew',
+  'andy':      'andrew',
+  'billy':     'william',
+  'will':      'william',
+  'alex':      'alexander',
+  'nate':      'nathan',
+  'matt':      'matthew',
+  'nick':      'nicholas',
+  'zach':      'zachary',
+  'zack':      'zachary',
+  'sam':       'samuel',
+  'ben':       'benjamin',
+  'chris':     'christopher',
+  'mike':      'michael',
+  'micky':     'michael',
+  'tom':       'thomas',
+  'tim':       'timothy',
+  'rob':       'robert',
+  'bob':       'robert',
+  'bobby':     'robert',
+  'jim':       'james',
+  'jimmy':     'james',
+  'charlie':   'charles',
+  'dan':       'daniel',
+  'danny':     'daniel',
+  'tony':      'anthony',
+  'freddy':    'frederick',
+  'fred':      'frederick',
+  'eddie':     'edward',
+  'ed':        'edward',
+  'cam':       'cameron',
+  'emile':     'emilio',
+  'cj':        'charles',
+  'aj':        'andrew',
+  'rj':        'robert',
+  'mj':        'michael',
+};
+
 function buildSearchTerms(player) {
   const raw    = player.first.substring(0, 3);
   const prefix = stripAccents(raw);
@@ -352,6 +393,15 @@ function buildSearchTerms(player) {
   terms.add(`${prefix} ${stripAccents(segs[0])}`);
   terms.add(`${prefix} ${stripAccents(segs[segs.length - 1])}`);
   if (segs.length >= 3) terms.add(`${prefix} ${stripAccents(segs[1])}`);
+
+  // Also try formal/alternate first name if nickname is known
+  const firstLower = player.first.toLowerCase();
+  const formal = NICKNAME_MAP[firstLower];
+  if (formal) {
+    const formalPrefix = formal.substring(0, 3);
+    terms.add(`${formalPrefix} ${stripAccents(last)}`);
+    terms.add(`${formalPrefix} ${stripAccents(segs[0])}`);
+  }
 
   return [...terms];
 }
@@ -571,22 +621,38 @@ async function main() {
         }
       }
 
-      // Set Star Rating — dropdown has: 4.75, 4.5, 4.25, 4, 3.75
+      // Set Star Rating — find the select whose options include 4.75 (unique to Star Rating)
       const starValue = String(parseFloat(player.stars));
-      try { await page.waitForSelector('select', { timeout: 5000 }); } catch (_) {}
-      const selects   = page.locator('select');
-      const selCount  = await selects.count();
-      for (let si = 0; si < selCount; si++) {
-        const sel  = selects.nth(si);
-        if (!await sel.isVisible({ timeout: 1000 }).catch(() => false)) continue;
-        const opts = await sel.locator('option').allTextContents();
-        if (!opts.some(o => /^\d(\.\d+)?$/.test(o.trim()))) continue;
-        await sel.selectOption(starValue).catch(() => {});
-        break;
+      try { await page.waitForSelector('text=Star Rating', { timeout: 5000 }); } catch (_) {}
+      await sleep(500);
+      let ratingSet = false;
+      // Strategy 1: select in the same table row as "Star Rating" label
+      try {
+        const starRow = page.locator('tr:has-text("Star Rating")').last();
+        const starSel = starRow.locator('select');
+        if (await starSel.isVisible({ timeout: 2000 })) {
+          await starSel.selectOption(starValue);
+          ratingSet = true;
+        }
+      } catch (_) {}
+      // Strategy 2: find the select whose options contain 4.75
+      if (!ratingSet) {
+        const selects  = page.locator('select');
+        const selCount = await selects.count();
+        for (let si = 0; si < selCount; si++) {
+          const sel  = selects.nth(si);
+          if (!await sel.isVisible({ timeout: 500 }).catch(() => false)) continue;
+          const opts = await sel.locator('option').allTextContents();
+          if (!opts.map(o => o.trim()).some(o => o === '4.75' || o === '4.5')) continue;
+          await sel.selectOption(starValue).catch(() => {});
+          ratingSet = true;
+          break;
+        }
       }
 
-      // Save
-      for (const sel of ['button:has-text("SAVE")','button:has-text("Save")','button[type="submit"]']) {
+      // Save — button is top-right; wait for it to be visible
+      try { await page.waitForSelector('button:has-text("SAVE"), button:has-text("Save")', { timeout: 3000 }); } catch (_) {}
+      for (const sel of ['button:has-text("SAVE")','button:has-text("Save")','button[type="submit"]','input[type="submit"]']) {
         const el = page.locator(sel).first();
         if (await el.isVisible({ timeout: 1000 }).catch(() => false)) { await el.click(); break; }
       }

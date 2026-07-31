@@ -17,7 +17,7 @@ const path = require('path');
 const USERNAME        = 'bcollins@neutralzone.net';
 const PASSWORD        = 'NZhockey24!';
 const LIST_ID         = '-1438107616';
-const DELAY_MS        = 800;
+const DELAY_MS        = 1500;
 const SCREENSHOTS_DIR = './rinknet-screenshots';
 
 const PLAYERS = [
@@ -491,7 +491,7 @@ async function main() {
         await searchInput.fill('');
         await sleep(200);
         await searchInput.fill(term);
-        await sleep(2500);
+        await sleep(4000);
         const count = await page.locator('table tbody tr:has-text("/2010")').count().catch(() => 0);
         if (count > 0) { rowFound = true; break; }
       }
@@ -559,7 +559,7 @@ async function main() {
           continue;
         }
       }
-      await sleep(DELAY_MS);
+      await sleep(2500);
 
       // Fill Ranking
       for (const sel of ['input[name="ranking"]','input[name="rank"]','input[type="number"]','input[type="text"]']) {
@@ -573,11 +573,12 @@ async function main() {
 
       // Set Star Rating — dropdown has: 4.75, 4.5, 4.25, 4, 3.75
       const starValue = String(parseFloat(player.stars));
+      try { await page.waitForSelector('select', { timeout: 5000 }); } catch (_) {}
       const selects   = page.locator('select');
       const selCount  = await selects.count();
       for (let si = 0; si < selCount; si++) {
         const sel  = selects.nth(si);
-        if (!await sel.isVisible({ timeout: 500 }).catch(() => false)) continue;
+        if (!await sel.isVisible({ timeout: 1000 }).catch(() => false)) continue;
         const opts = await sel.locator('option').allTextContents();
         if (!opts.some(o => /^\d(\.\d+)?$/.test(o.trim()))) continue;
         await sel.selectOption(starValue).catch(() => {});

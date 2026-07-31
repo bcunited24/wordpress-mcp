@@ -16,7 +16,7 @@ const path = require('path');
 
 const USERNAME        = 'bcollins@neutralzone.net';
 const PASSWORD        = 'NZhockey24!';
-const LIST_NAME       = '2026 NZ NA Rankings';  // ← edit this
+const LIST_ID         = '-1438107616';
 const DELAY_MS        = 800;
 const SCREENSHOTS_DIR = './rinknet-screenshots';
 
@@ -375,7 +375,6 @@ async function main() {
   console.log('║  RinkNet NA Top 300 Rankings Importer            ║');
   console.log('╚══════════════════════════════════════════════════╝\n');
 
-  let listId         = null;
   let loginCompleted = false;
 
   const browser = await chromium.launch({ headless: false, slowMo: 100 });
@@ -386,23 +385,8 @@ async function main() {
     if (req.url().includes('/users/loginFromAuthPortal')) loginCompleted = true;
   });
 
-  page.on('response', async res => {
-    const url    = res.url();
-    const method = res.request().method();
-    if (url === 'https://ops.rinknet.com/lists' && method === 'POST') {
-      try {
-        const json = await res.json().catch(() => null);
-        if (json && json.id != null) { listId = String(json.id); console.log(`\n  ✓ List created (ID: ${listId})`); }
-      } catch (_) {}
-    }
-    if (url.match(/ops\.rinknet\.com\/lists\/-?\d+/) && method === 'GET' && !listId) {
-      const m = url.match(/lists\/(-?\d+)/);
-      if (m) listId = m[1];
-    }
-  });
-
   // ── Login ──────────────────────────────────────────────────────────────────
-  console.log('[1/4] Logging in…');
+  console.log('[1/3] Logging in…');
   await page.goto('https://accounts.rinknet.com/', { waitUntil: 'domcontentloaded' });
   await sleep(2000);
 
@@ -432,62 +416,9 @@ async function main() {
   }
   console.log('  ✓ Logged in\n');
 
-  // ── Create list ────────────────────────────────────────────────────────────
-  console.log('[2/4] Creating list…');
-  await page.goto('https://ops.rinknet.com/#/home/lists', { waitUntil: 'domcontentloaded' });
-  for (let i = 0; i < 60; i++) { if (loginCompleted) break; await sleep(1000); }
-  await sleep(3000);
-
-  let season_id = 174507552;
-  let type_id   = 927908487;
-  try {
-    const cfg = await page.evaluate(async () => {
-      const r = await fetch('/lists?per_page=5', { credentials: 'same-origin' });
-      if (!r.ok) return null;
-      const d = await r.json();
-      const items = Array.isArray(d) ? d : (d.items || d.data || d.lists || []);
-      if (items.length > 0) return { season_id: items[0].season_id, type_id: items[0].type_id };
-      return null;
-    });
-    if (cfg && cfg.season_id) { season_id = cfg.season_id; type_id = cfg.type_id; }
-  } catch (_) {}
-
-  const today = new Date().toISOString().split('T')[0];
-  try {
-    const r = await page.evaluate(async (body) => {
-      const res = await fetch('/lists', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-        credentials: 'same-origin',
-        body: JSON.stringify(body),
-      });
-      const json = await res.json().catch(() => null);
-      return { status: res.status, json };
-    }, { season_id, type_id, description: LIST_NAME, notes: null, tournament_id: null, date: today });
-
-    if (r.json && r.json.id) { listId = r.json.id; console.log(`  ✓ List "${LIST_NAME}" created (ID: ${listId})`); }
-    else console.log(`  ⚠ API returned ${r.status} — will try create page`);
-  } catch (e) { console.log(`  ⚠ API error: ${e.message}`); }
-
-  if (!listId) {
-    console.log('\n  Opening create page. Fill in the list name and save, then wait…');
-    await page.goto('https://ops.rinknet.com/#/home/lists/create', { waitUntil: 'domcontentloaded' });
-    for (let i = 0; i < 180; i++) {
-      if (listId) break;
-      const m = page.url().match(/#\/home\/lists\/view\/(-?\d+)/);
-      if (m) { listId = m[1]; break; }
-      await sleep(1000);
-    }
-    if (!listId) {
-      console.log('  Type the list ID from the browser URL and press Enter:');
-      listId = await readLine();
-    }
-  }
-  console.log();
-
-  // ── Navigate to list ───────────────────────────────────────────────────────
-  console.log('[3/4] Navigating to list view…');
-  const listUrl = `https://ops.rinknet.com/#/home/lists/view/${listId}`;
+  // ── Navigate to existing list ──────────────────────────────────────────────
+  console.log(`[2/3] Navigating to list ${LIST_ID}…`);
+  const listUrl = `https://ops.rinknet.com/#/home/lists/view/${LIST_ID}`;
   await page.goto(listUrl, { waitUntil: 'domcontentloaded' });
   await sleep(3000);
   try {
@@ -499,7 +430,7 @@ async function main() {
   }
 
   // ── Add players ────────────────────────────────────────────────────────────
-  console.log(`[4/4] Adding ${PLAYERS.length} players…\n`);
+  console.log(`[3/3] Adding ${PLAYERS.length} players…\n`);
   const results = { ok: [], skip: [], notFound: [] };
 
   for (const player of PLAYERS) {
@@ -510,7 +441,7 @@ async function main() {
       await page.keyboard.press('Escape').catch(() => {});
       await sleep(300);
 
-      if (!page.url().includes(`/home/lists/view/${listId}`)) {
+      if (!page.url().includes(`/home/lists/view/${LIST_ID}`)) {
         await page.goto(listUrl, { waitUntil: 'domcontentloaded' });
         await sleep(2500);
       }
@@ -685,7 +616,7 @@ async function main() {
   console.log(`  ✗ Not found: ${results.notFound.length}`);
   if (results.skip.length)     console.log(`  Skip ranks:      ${results.skip.join(', ')}`);
   if (results.notFound.length) console.log(`  Not-found ranks: ${results.notFound.join(', ')}`);
-  console.log(`\n  List URL: ${listUrl}`);
+  console.log(`\n  List URL: https://ops.rinknet.com/#/home/lists/view/${LIST_ID}`);
   console.log('══════════════════════════════════════════════\n');
 
   await browser.close();
